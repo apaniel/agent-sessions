@@ -1,9 +1,11 @@
 interface HeaderProps {
+  totalCount: number;
+  waitingCount: number;
   onRefresh: () => void;
   isLoading: boolean;
 }
 
-export function Header({ onRefresh, isLoading }: HeaderProps) {
+export function Header({ totalCount: _totalCount, waitingCount: _waitingCount, onRefresh, isLoading }: HeaderProps) {
   return (
     <div className="flex items-center justify-between p-3 border-b border-[#2a2a2a]">
       <div>
