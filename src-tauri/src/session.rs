@@ -53,6 +53,45 @@ struct MessageContent {
     content: Option<serde_json::Value>,
 }
 
+/// Convert a directory name like "-Users-ozan-Projects-ai-image-dashboard" back to a path
+/// The challenge is that both path separators AND project names can contain dashes
+/// We handle this by recognizing that the path structure is predictable:
+/// /Users/<username>/Projects/<project-name> or /Users/<username>/.../<project-name>
+fn convert_dir_name_to_path(dir_name: &str) -> String {
+    // Remove leading dash if present
+    let name = dir_name.strip_prefix('-').unwrap_or(dir_name);
+
+    // Split by dash
+    let parts: Vec<&str> = name.split('-').collect();
+
+    if parts.is_empty() {
+        return String::new();
+    }
+
+    // Find "Projects" or "UnityProjects" index - everything after that is the project name
+    let projects_idx = parts.iter().position(|&p| p == "Projects" || p == "UnityProjects");
+
+    if let Some(idx) = projects_idx {
+        // Path components are before and including "Projects"
+        let path_parts = &parts[..=idx];
+        // Project name is everything after "Projects", joined with dashes
+        let project_parts = &parts[idx + 1..];
+
+        let mut path = String::from("/");
+        path.push_str(&path_parts.join("/"));
+
+        if !project_parts.is_empty() {
+            path.push('/');
+            path.push_str(&project_parts.join("-"));
+        }
+
+        path
+    } else {
+        // Fallback: just replace dashes with slashes (old behavior)
+        format!("/{}", name.replace('-', "/"))
+    }
+}
+
 pub fn get_sessions() -> SessionsResponse {
     let claude_processes = find_claude_processes();
     let mut sessions = Vec::new();
@@ -88,16 +127,17 @@ pub fn get_sessions() -> SessionsResponse {
             }
 
             // Convert directory name back to path
+            // Directory names use "-" as path separator, but project names can also contain "-"
+            // Format: -Users-ozan-Projects-project-name becomes /Users/ozan/Projects/project-name
+            // We need to be smarter about this conversion
             let dir_name = path.file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
 
-            let project_path = dir_name.replace("-", "/");
-            let project_path = if project_path.starts_with("/") {
-                project_path
-            } else {
-                format!("/{}", project_path)
-            };
+            // The directory name starts with "-" and uses "-" to separate path components
+            // But we can't just replace all "-" because project names contain dashes
+            // Instead, we'll look for patterns like "-Users-" and "-Projects-" etc.
+            let project_path = convert_dir_name_to_path(dir_name);
 
             // Check if this project has an active Claude process
             let process = cwd_to_process.get(&project_path);
@@ -251,5 +291,43 @@ fn determine_status(cpu_usage: f32, last_role: Option<&str>, _last_timestamp: &O
         Some("assistant") => SessionStatus::Waiting,
         Some("user") => SessionStatus::Processing,
         _ => SessionStatus::Idle,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_convert_dir_name_to_path() {
+        // Test basic project path
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-Projects-ai-image-dashboard"),
+            "/Users/ozan/Projects/ai-image-dashboard"
+        );
+
+        // Test project with multiple dashes
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-Projects-backend-service-generator-ai"),
+            "/Users/ozan/Projects/backend-service-generator-ai"
+        );
+
+        // Test UnityProjects
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-UnityProjects-my-game"),
+            "/Users/ozan/UnityProjects/my-game"
+        );
+
+        // Test worktree paths (with double dashes)
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-Projects-ai-image-dashboard--rsworktree-feature"),
+            "/Users/ozan/Projects/ai-image-dashboard--rsworktree-feature"
+        );
+
+        // Test just Projects folder
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-Projects"),
+            "/Users/ozan/Projects"
+        );
     }
 }
