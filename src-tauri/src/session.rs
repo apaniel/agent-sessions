@@ -84,6 +84,49 @@ fn has_tool_result(content: &serde_json::Value) -> bool {
     }
 }
 
+/// Check if message content is a local slash command that doesn't trigger Claude response
+/// These commands are handled locally by Claude Code and don't require thinking
+fn is_local_slash_command(content: &serde_json::Value) -> bool {
+    let text = match content {
+        serde_json::Value::String(s) => s.as_str(),
+        serde_json::Value::Array(arr) => {
+            // Find first text block
+            arr.iter().find_map(|v| {
+                v.get("text").and_then(|t| t.as_str())
+            }).unwrap_or("")
+        }
+        _ => return false,
+    };
+
+    let trimmed = text.trim();
+
+    // Local commands that don't trigger Claude to think
+    // These are handled by the CLI itself
+    let local_commands = [
+        "/clear",
+        "/compact",
+        "/help",
+        "/config",
+        "/cost",
+        "/doctor",
+        "/init",
+        "/login",
+        "/logout",
+        "/memory",
+        "/model",
+        "/permissions",
+        "/pr-comments",
+        "/review",
+        "/status",
+        "/terminal-setup",
+        "/vim",
+    ];
+
+    local_commands.iter().any(|cmd| {
+        trimmed == *cmd || trimmed.starts_with(&format!("{} ", cmd))
+    })
+}
+
 /// Convert a directory name like "-Users-ozan-Projects-ai-image-dashboard" back to a path
 /// The challenge is that both path separators AND project names can contain dashes
 /// We handle this by recognizing that the path structure is predictable:
@@ -292,6 +335,7 @@ fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &Claude
     let mut last_msg_type = None;
     let mut last_has_tool_use = false;
     let mut last_has_tool_result = false;
+    let mut last_is_local_command = false;
     let mut found_status_info = false;
 
     // Read last N lines for efficiency
@@ -325,6 +369,7 @@ fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &Claude
                             last_role = content.role.clone();
                             last_has_tool_use = has_tool_use(c);
                             last_has_tool_result = has_tool_result(c);
+                            last_is_local_command = is_local_slash_command(c);
                             found_status_info = true;
                         }
                     }
@@ -370,6 +415,7 @@ fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &Claude
         last_msg_type.as_deref(),
         last_has_tool_use,
         last_has_tool_result,
+        last_is_local_command,
         file_recently_modified,
     );
 
@@ -419,6 +465,7 @@ fn determine_status(
     last_msg_type: Option<&str>,
     has_tool_use: bool,
     has_tool_result: bool,
+    is_local_command: bool,
     file_recently_modified: bool,
 ) -> SessionStatus {
     // Determine status based on the last message in the conversation:
@@ -427,6 +474,7 @@ fn determine_status(
     // - If last message is from assistant with tool_use -> Processing (tool is being executed)
     // - If last message is from assistant with only text -> Waiting (Claude finished, waiting for user)
     // - If last message is from user -> Thinking (Claude is generating a response)
+    // - If last message is a local slash command (/clear, /help, etc.) -> Waiting (these don't trigger Claude)
 
     // Key insight: if the file was modified very recently, Claude is actively working
     // and we should NOT show "Waiting" even if the last written message was assistant text
@@ -446,7 +494,11 @@ fn determine_status(
             }
         }
         Some("user") => {
-            if has_tool_result {
+            if is_local_command {
+                // Local slash commands like /clear, /help, /compact don't trigger Claude
+                // Session is waiting for actual user input
+                SessionStatus::Waiting
+            } else if has_tool_result {
                 // User message contains tool_result - tool execution complete,
                 // Claude is processing the result
                 if file_recently_modified {
