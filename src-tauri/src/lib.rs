@@ -58,12 +58,22 @@ fn register_shortcut(app: tauri::AppHandle, shortcut: String) -> Result<(), Stri
     let parsed_shortcut: Shortcut = shortcut.parse()
         .map_err(|e| format!("Invalid shortcut format: {}", e))?;
 
-    // Register the new shortcut
+    // Register the new shortcut - toggle window visibility
     app.global_shortcut()
         .on_shortcut(parsed_shortcut.clone(), move |app, _shortcut, _event| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.set_focus();
+                // Check if window is visible and focused
+                let is_visible = window.is_visible().unwrap_or(false);
+                let is_focused = window.is_focused().unwrap_or(false);
+
+                if is_visible && is_focused {
+                    // Hide the window to return to previous app
+                    let _ = window.hide();
+                } else {
+                    // Show and focus the window
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
             }
         })
         .map_err(|e| format!("Failed to register shortcut: {}", e))?;
