@@ -1,5 +1,10 @@
 # Agent Sessions
 
+[![GitHub release](https://img.shields.io/github/v/release/ozankasikci/agent-sessions)](https://github.com/ozankasikci/agent-sessions/releases)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
+[![macOS](https://img.shields.io/badge/macOS-Monterey%2B-black)](https://github.com/ozankasikci/agent-sessions/releases)
+[![Homebrew](https://img.shields.io/badge/Homebrew-available-orange)](https://github.com/ozankasikci/homebrew-tap)
+
 A macOS desktop app to monitor all running Claude Code sessions.
 
 ![Demo](demo/claude-sessions-demo.gif)
