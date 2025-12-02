@@ -231,11 +231,12 @@ fn find_active_session(project_dir: &PathBuf, project_path: &str, process: &Clau
     let mut last_role = None;
     let mut last_msg_type = None;
     let mut last_has_tool_use = false;
-    let mut last_has_tool_result = false;
+    let mut _last_has_tool_result = false;
+    let mut found_status_info = false;
 
     // Read last N lines for efficiency
     let lines: Vec<_> = reader.lines().flatten().collect();
-    let recent_lines = lines.iter().rev().take(50);
+    let recent_lines = lines.iter().rev().take(100);
 
     for line in recent_lines {
         if let Ok(msg) = serde_json::from_str::<JsonlMessage>(line) {
@@ -248,34 +249,44 @@ fn find_active_session(project_dir: &PathBuf, project_path: &str, process: &Clau
             if last_timestamp.is_none() {
                 last_timestamp = msg.timestamp;
             }
-            if last_msg_type.is_none() {
-                last_msg_type = msg.msg_type;
-            }
 
-            if last_message.is_none() {
+            // For status detection, we need to find the most recent message that has CONTENT
+            // (not just a type). The JSONL has streaming entries, so we need the final one.
+            if !found_status_info {
                 if let Some(content) = &msg.message {
-                    last_role = content.role.clone();
                     if let Some(c) = &content.content {
-                        // Check for tool_use or tool_result in the most recent message
-                        if !last_has_tool_use && !last_has_tool_result {
-                            last_has_tool_use = has_tool_use(c);
-                            last_has_tool_result = has_tool_result(c);
-                        }
-
-                        last_message = match c {
-                            serde_json::Value::String(s) => Some(s.clone()),
-                            serde_json::Value::Array(arr) => {
-                                arr.iter().find_map(|v| {
-                                    v.get("text").and_then(|t| t.as_str()).map(String::from)
-                                })
-                            }
-                            _ => None,
+                        // Check if this content has actual data (not empty array)
+                        let has_content = match c {
+                            serde_json::Value::String(s) => !s.is_empty(),
+                            serde_json::Value::Array(arr) => !arr.is_empty(),
+                            _ => false,
                         };
+
+                        if has_content {
+                            // Capture type and content info from the SAME message
+                            last_msg_type = msg.msg_type.clone();
+                            last_role = content.role.clone();
+                            last_has_tool_use = has_tool_use(c);
+                            _last_has_tool_result = has_tool_result(c);
+                            found_status_info = true;
+
+                            if last_message.is_none() {
+                                last_message = match c {
+                                    serde_json::Value::String(s) => Some(s.clone()),
+                                    serde_json::Value::Array(arr) => {
+                                        arr.iter().find_map(|v| {
+                                            v.get("text").and_then(|t| t.as_str()).map(String::from)
+                                        })
+                                    }
+                                    _ => None,
+                                };
+                            }
+                        }
                     }
                 }
             }
 
-            if session_id.is_some() && last_message.is_some() {
+            if session_id.is_some() && found_status_info && last_message.is_some() {
                 break;
             }
         }
@@ -283,12 +294,10 @@ fn find_active_session(project_dir: &PathBuf, project_path: &str, process: &Clau
 
     let session_id = session_id?;
 
-    // Determine status based on message type, content, and CPU usage
+    // Determine status based on message type and content
     let status = determine_status(
-        process.cpu_usage,
         last_msg_type.as_deref(),
         last_has_tool_use,
-        last_has_tool_result,
     );
 
     // Extract project name from path
@@ -323,16 +332,9 @@ fn find_active_session(project_dir: &PathBuf, project_path: &str, process: &Clau
 }
 
 fn determine_status(
-    cpu_usage: f32,
     last_msg_type: Option<&str>,
     has_tool_use: bool,
-    _has_tool_result: bool,
 ) -> SessionStatus {
-    // High CPU means actively processing
-    if cpu_usage > 5.0 {
-        return SessionStatus::Processing;
-    }
-
     // Determine status based on the last message in the conversation:
     // - If last message is from assistant with tool_use -> Processing (tool is being executed)
     // - If last message is from user with tool_result -> Processing (Claude will continue after tool)
