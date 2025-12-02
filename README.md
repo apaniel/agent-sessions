@@ -13,12 +13,16 @@ A macOS desktop app to monitor all running Claude Code sessions.
 
 ## Installation
 
+### Homebrew (recommended)
+
 ```bash
-npm install
-npm run tauri build
+brew tap ozankasikci/tap
+brew install --cask agent-sessions
 ```
 
-The built app will be at `src-tauri/target/release/bundle/dmg/`.
+### Manual
+
+Download the latest DMG from [Releases](https://github.com/ozankasikci/agent-sessions/releases).
 
 ## Development
 
