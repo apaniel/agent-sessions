@@ -274,8 +274,22 @@ fn find_active_session(project_dir: &PathBuf, project_path: &str, process: &Clau
                                 last_message = match c {
                                     serde_json::Value::String(s) => Some(s.clone()),
                                     serde_json::Value::Array(arr) => {
-                                        arr.iter().find_map(|v| {
+                                        // First try to find text content
+                                        let text = arr.iter().find_map(|v| {
                                             v.get("text").and_then(|t| t.as_str()).map(String::from)
+                                        });
+                                        // If no text, show tool name being used
+                                        text.or_else(|| {
+                                            arr.iter().find_map(|v| {
+                                                if v.get("type").and_then(|t| t.as_str()) == Some("tool_use") {
+                                                    v.get("name").and_then(|n| n.as_str())
+                                                        .map(|name| format!("Using {}...", name))
+                                                } else if v.get("type").and_then(|t| t.as_str()) == Some("tool_result") {
+                                                    Some("Processing tool result...".to_string())
+                                                } else {
+                                                    None
+                                                }
+                                            })
                                         })
                                     }
                                     _ => None,
