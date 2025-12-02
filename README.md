@@ -2,7 +2,7 @@
 
 A macOS desktop app to monitor all running Claude Code sessions.
 
-https://github.com/user-attachments/assets/placeholder
+![Demo](demo/claude-sessions-demo.gif)
 
 ## Features
 
