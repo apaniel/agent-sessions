@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Session, SessionsResponse } from '../types/session';
 
-const POLL_INTERVAL = 3000; // 3 seconds
+const POLL_INTERVAL = 5000; // 5 seconds
 
 export function useSessions() {
   const [sessions, setSessions] = useState<Session[]>([]);
