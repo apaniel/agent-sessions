@@ -131,6 +131,10 @@ fn is_local_slash_command(content: &serde_json::Value) -> bool {
 /// The challenge is that both path separators AND project names can contain dashes
 /// We handle this by recognizing that the path structure is predictable:
 /// /Users/<username>/Projects/<project-name> or /Users/<username>/.../<project-name>
+///
+/// Special case: Double dashes (--) indicate a hidden folder (starting with .)
+/// followed by subfolders separated by single dashes
+/// e.g., "ai-image-dashboard--rsworktree-analytics" becomes "ai-image-dashboard/.rsworktree/analytics"
 fn convert_dir_name_to_path(dir_name: &str) -> String {
     // Remove leading dash if present
     let name = dir_name.strip_prefix('-').unwrap_or(dir_name);
@@ -148,7 +152,7 @@ fn convert_dir_name_to_path(dir_name: &str) -> String {
     if let Some(idx) = projects_idx {
         // Path components are before and including "Projects"
         let path_parts = &parts[..=idx];
-        // Project name is everything after "Projects", joined with dashes
+        // Project name is everything after "Projects"
         let project_parts = &parts[idx + 1..];
 
         let mut path = String::from("/");
@@ -156,7 +160,45 @@ fn convert_dir_name_to_path(dir_name: &str) -> String {
 
         if !project_parts.is_empty() {
             path.push('/');
-            path.push_str(&project_parts.join("-"));
+            // Handle the project path with potential hidden folders
+            // Double dash (empty string between dashes when split) indicates hidden folder
+            // After a hidden folder marker, subsequent parts are subfolders
+            let mut in_hidden_folder = false;
+            let mut segments: Vec<String> = Vec::new();
+            let mut current_segment = String::new();
+
+            for part in project_parts {
+                if part.is_empty() {
+                    // Empty part means we hit a double dash - start hidden folder
+                    if !current_segment.is_empty() {
+                        segments.push(current_segment);
+                        current_segment = String::new();
+                    }
+                    in_hidden_folder = true;
+                } else if in_hidden_folder {
+                    // After double dash, each part is a subfolder
+                    // First part after -- gets the dot prefix
+                    if current_segment.is_empty() {
+                        current_segment = format!(".{}", part);
+                    } else {
+                        segments.push(current_segment);
+                        current_segment = part.to_string();
+                    }
+                } else {
+                    // Normal project name part - join with dashes
+                    if current_segment.is_empty() {
+                        current_segment = part.to_string();
+                    } else {
+                        current_segment.push('-');
+                        current_segment.push_str(part);
+                    }
+                }
+            }
+            if !current_segment.is_empty() {
+                segments.push(current_segment);
+            }
+
+            path.push_str(&segments.join("/"));
         }
 
         path
@@ -546,10 +588,16 @@ mod tests {
             "/Users/ozan/UnityProjects/my-game"
         );
 
-        // Test worktree paths (with double dashes)
+        // Test worktree paths (with double dashes -> hidden folders)
         assert_eq!(
-            convert_dir_name_to_path("-Users-ozan-Projects-ai-image-dashboard--rsworktree-feature"),
-            "/Users/ozan/Projects/ai-image-dashboard--rsworktree-feature"
+            convert_dir_name_to_path("-Users-ozan-Projects-ai-image-dashboard--rsworktree-analytics"),
+            "/Users/ozan/Projects/ai-image-dashboard/.rsworktree/analytics"
+        );
+
+        // Test multiple hidden folders
+        assert_eq!(
+            convert_dir_name_to_path("-Users-ozan-Projects-myproject--hidden--subfolder"),
+            "/Users/ozan/Projects/myproject/.hidden/.subfolder"
         );
 
         // Test just Projects folder
