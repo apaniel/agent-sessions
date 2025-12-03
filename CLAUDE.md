@@ -1,0 +1,1 @@
+- to release a new version, use @scripts/release.sh
