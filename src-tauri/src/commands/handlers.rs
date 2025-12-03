@@ -25,7 +25,7 @@ pub fn focus_session(pid: u32, project_path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn update_tray_title(app: tauri::AppHandle, total: usize, waiting: usize) -> Result<(), String> {
     let title = if waiting > 0 {
-        format!("{} ({} waiting)", total, waiting)
+        format!("{} ({} idle)", total, waiting)
     } else if total > 0 {
         format!("{}", total)
     } else {
