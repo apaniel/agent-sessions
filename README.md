@@ -15,6 +15,8 @@ A macOS desktop app to monitor all running Claude Code sessions.
 - Real-time status detection (Thinking, Processing, Waiting, Idle)
 - Global hotkey to toggle visibility (configurable)
 - Click to focus on a specific session's terminal
+- Custom session names (rename via kebab menu)
+- Quick access URL for each session (e.g., dev server links)
 
 > **Note:** Currently supports macOS only with iTerm2 terminal. Support for other terminals coming soon.
 
