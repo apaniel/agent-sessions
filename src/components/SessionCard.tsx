@@ -167,7 +167,7 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
                   title={customUrl}
                 >
                   <svg
-                    className="w-4 h-4 text-primary"
+                    className="w-4 h-4 text-muted-foreground"
                     fill="none"
                     stroke="currentColor"
                     viewBox="0 0 24 24"
