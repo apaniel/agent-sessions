@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.16] - 2025-12-06
+
+### Changed
+- Version bump for release
+
 ## [0.1.15] - 2025-12-06
 
 ### Added
