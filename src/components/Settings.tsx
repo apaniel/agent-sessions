@@ -15,7 +15,7 @@ interface SettingsProps {
 }
 
 const STORAGE_KEY = 'claude-sessions-hotkey';
-const DEFAULT_HOTKEY = 'Option+Space';
+const DEFAULT_HOTKEY = 'Control+Space';
 
 export function Settings({ isOpen, onClose }: SettingsProps) {
   const [hotkey, setHotkey] = useState(DEFAULT_HOTKEY);

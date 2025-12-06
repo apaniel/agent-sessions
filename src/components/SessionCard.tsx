@@ -7,6 +7,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
 import {
@@ -19,6 +20,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { formatTimeAgo, truncatePath, statusConfig } from '@/lib/formatters';
 import { openUrl } from '@tauri-apps/plugin-opener';
+import { invoke } from '@tauri-apps/api/core';
 
 interface SessionCardProps {
   session: Session;
@@ -145,6 +147,14 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
     }
   };
 
+  const handleKillSession = async () => {
+    try {
+      await invoke('kill_session', { pid: session.pid });
+    } catch (error) {
+      console.error('Failed to kill session:', error);
+    }
+  };
+
   return (
     <>
       <Card
@@ -248,6 +258,23 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
                       Open GitHub
                     </DropdownMenuItem>
                   )}
+                  <DropdownMenuSeparator />
+                  <DropdownMenuItem onClick={handleKillSession} className="text-destructive focus:text-destructive">
+                    <svg
+                      className="w-4 h-4 mr-2"
+                      fill="none"
+                      stroke="currentColor"
+                      viewBox="0 0 24 24"
+                    >
+                      <path
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        strokeWidth={2}
+                        d="M6 18L18 6M6 6l12 12"
+                      />
+                    </svg>
+                    Kill Session
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
               <span className={`w-2.5 h-2.5 rounded-full ${config.color} shadow-sm shadow-current`} />
@@ -258,7 +285,7 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
           {session.gitBranch && (
             <div className="flex items-center gap-1.5 mb-3">
               <svg className="w-3.5 h-3.5 text-muted-foreground" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 10V3L4 14h7v7l9-11h-7z" />
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9" />
               </svg>
               <span className="text-xs text-muted-foreground truncate">
                 {session.gitBranch}

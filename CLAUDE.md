@@ -1,1 +1,1 @@
-- to release a new version, use @scripts/release.sh, check .env file for credentials
+- to release a new version, use @scripts/release.sh, check .env file for credentials, update changelog

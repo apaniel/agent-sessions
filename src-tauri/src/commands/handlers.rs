@@ -91,3 +91,23 @@ pub fn unregister_shortcut(app: tauri::AppHandle) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Kill a Claude Code process by PID
+#[tauri::command]
+pub fn kill_session(pid: u32) -> Result<(), String> {
+    use std::process::Command;
+
+    // Use kill command to terminate the process
+    let output = Command::new("kill")
+        .arg("-TERM")
+        .arg(pid.to_string())
+        .output()
+        .map_err(|e| format!("Failed to execute kill command: {}", e))?;
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("Failed to kill process {}: {}", pid, stderr))
+    }
+}

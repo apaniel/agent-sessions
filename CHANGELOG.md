@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.1.15] - 2025-12-06
+
+### Added
+- "Kill Session" option in session card menu to terminate Claude Code processes
+
+### Changed
+- Default hotkey changed from Option+Space to Control+Space
+- Git branch now shows proper branch icon instead of lightning bolt
+- Dev server port changed from 1420 to 1422 to avoid conflicts
+
 ## [0.1.14] - 2025-12-06
 
 ### Fixed
