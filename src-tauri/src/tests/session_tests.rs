@@ -225,18 +225,18 @@ fn test_is_local_slash_command() {
 
 #[test]
 fn test_determine_status_assistant_with_tool_use() {
-    // Assistant message with tool_use -> Processing
+    // Assistant message with tool_use but stale file -> Waiting (stuck)
     let status = determine_status(
         Some("assistant"),
         true,  // has_tool_use
         false, // has_tool_result
         false, // is_local_command
         false, // is_interrupted
-        false, // file_recently_modified
+        false, // file_recently_modified - stale means stuck
     );
-    assert!(matches!(status, SessionStatus::Processing));
+    assert!(matches!(status, SessionStatus::Waiting));
 
-    // Even with file recently modified, tool_use means Processing
+    // With file recently modified, tool_use means Processing (actively running)
     let status = determine_status(
         Some("assistant"),
         true,
@@ -275,16 +275,27 @@ fn test_determine_status_assistant_text_only() {
 
 #[test]
 fn test_determine_status_user_message() {
-    // Regular user message -> Thinking (Claude generating response)
+    // Regular user message with recent activity -> Thinking (Claude generating response)
     let status = determine_status(
         Some("user"),
         false,
         false,
         false, // not a local command
         false, // is_interrupted
-        false,
+        true,  // file_recently_modified - actively responding
     );
     assert!(matches!(status, SessionStatus::Thinking));
+
+    // Regular user message but stale -> Waiting (Claude not responding)
+    let status = determine_status(
+        Some("user"),
+        false,
+        false,
+        false, // not a local command
+        false, // is_interrupted
+        false, // file not recently modified - stuck
+    );
+    assert!(matches!(status, SessionStatus::Waiting));
 
     // User message that's a local command -> Waiting
     let status = determine_status(
@@ -322,16 +333,16 @@ fn test_determine_status_user_with_tool_result() {
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
-    // User message with tool_result but no recent modification -> Processing
+    // User message with tool_result but stale -> Waiting (stuck)
     let status = determine_status(
         Some("user"),
         false,
         true,  // has_tool_result
         false,
         false, // is_interrupted
-        false, // not recently modified
+        false, // not recently modified - stuck
     );
-    assert!(matches!(status, SessionStatus::Processing));
+    assert!(matches!(status, SessionStatus::Waiting));
 }
 
 #[test]
