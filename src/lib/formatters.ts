@@ -21,6 +21,7 @@ export function truncatePath(path: string): string {
 export const statusConfig = {
   waiting: {
     color: 'bg-white/50',
+    fillColor: 'fill-white/50',
     cardBg: 'bg-white/5',
     cardBorder: 'border-white/10',
     badgeClassName: 'border-white/20 text-white/60 bg-white/5',
@@ -28,6 +29,7 @@ export const statusConfig = {
   },
   thinking: {
     color: 'bg-purple-400',
+    fillColor: 'fill-purple-400',
     cardBg: 'bg-purple-400/15',
     cardBorder: 'border-purple-400/30',
     badgeClassName: 'border-purple-400/40 text-purple-300 bg-purple-400/20',
@@ -35,6 +37,7 @@ export const statusConfig = {
   },
   processing: {
     color: 'bg-emerald-400',
+    fillColor: 'fill-emerald-400',
     cardBg: 'bg-emerald-400/15',
     cardBorder: 'border-emerald-400/30',
     badgeClassName: 'border-emerald-400/40 text-emerald-300 bg-emerald-400/20',
@@ -42,6 +45,7 @@ export const statusConfig = {
   },
   idle: {
     color: 'bg-white/30',
+    fillColor: 'fill-white/30',
     cardBg: 'bg-white/5',
     cardBorder: 'border-white/10',
     badgeClassName: 'border-white/20 text-white/50 bg-white/5',

@@ -1,5 +1,8 @@
 use super::{AgentDetector, AgentProcess};
 use crate::session::{AgentType, Session, SessionStatus};
+use serde::Deserialize;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 pub struct OpenCodeDetector;
 
@@ -22,6 +25,49 @@ impl AgentDetector for OpenCodeDetector {
         }
         get_opencode_sessions(processes)
     }
+}
+
+// JSON structures for OpenCode data files
+
+#[derive(Deserialize)]
+struct OpenCodeProject {
+    id: String,
+    worktree: String,
+    #[serde(default)]
+    sandboxes: Vec<String>,
+    #[serde(default)]
+    time: OpenCodeTime,
+}
+
+#[derive(Deserialize, Default)]
+struct OpenCodeTime {
+    #[serde(default)]
+    created: u64,
+    #[serde(default)]
+    updated: u64,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeSession {
+    id: String,
+    #[serde(rename = "projectID")]
+    project_id: String,
+    #[serde(default)]
+    directory: String,
+    #[serde(default)]
+    title: String,
+    #[serde(default)]
+    time: OpenCodeTime,
+}
+
+#[derive(Deserialize)]
+struct OpenCodeMessage {
+    id: String,
+    #[serde(rename = "sessionID")]
+    session_id: String,
+    role: String,
+    #[serde(default)]
+    time: OpenCodeTime,
 }
 
 /// Find running opencode processes
@@ -54,20 +100,19 @@ fn find_opencode_processes() -> Vec<AgentProcess> {
     processes
 }
 
-/// Get OpenCode sessions from SQLite databases
+/// Get OpenCode sessions from JSON files
 fn get_opencode_sessions(processes: &[AgentProcess]) -> Vec<Session> {
-    use std::collections::HashMap;
-
     let mut sessions = Vec::new();
 
-    // OpenCode data directory: ~/.local/share/opencode/project/
-    let base_path = match dirs::data_local_dir() {
-        Some(p) => p.join("opencode").join("project"),
+    // OpenCode data directory: ~/.local/share/opencode/storage/
+    // Note: OpenCode uses XDG convention, not macOS Application Support
+    let storage_path = match dirs::home_dir() {
+        Some(home) => home.join(".local").join("share").join("opencode").join("storage"),
         None => return sessions,
     };
 
-    if !base_path.exists() {
-        log::debug!("OpenCode data directory does not exist: {:?}", base_path);
+    if !storage_path.exists() {
+        log::debug!("OpenCode storage directory does not exist: {:?}", storage_path);
         return sessions;
     }
 
@@ -79,34 +124,34 @@ fn get_opencode_sessions(processes: &[AgentProcess]) -> Vec<Session> {
         }
     }
 
-    // Scan project directories
-    if let Ok(entries) = std::fs::read_dir(&base_path) {
-        for entry in entries.flatten() {
-            let project_dir = entry.path();
-            if !project_dir.is_dir() {
-                continue;
-            }
+    // Load all projects
+    let projects = load_projects(&storage_path);
+    log::debug!("Loaded {} OpenCode projects", projects.len());
 
-            let db_path = project_dir.join("storage").join("db.sqlite");
-            if !db_path.exists() {
-                continue;
-            }
-
-            let project_slug = project_dir
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("");
-
-            // Find matching process by checking if cwd contains project slug
-            let matching_process = cwd_to_process
-                .iter()
-                .find(|(cwd, _)| cwd.contains(project_slug))
-                .map(|(_, p)| *p);
-
-            if let Some(process) = matching_process {
-                if let Some(session) = parse_opencode_session(&db_path, project_slug, process) {
-                    sessions.push(session);
+    // Match projects to running processes
+    for project in &projects {
+        // Check if any process is running in this project's worktree or sandboxes
+        let matching_process = cwd_to_process
+            .iter()
+            .find(|(cwd, _)| {
+                // Check if cwd matches the project worktree
+                if cwd.as_str() == project.worktree || cwd.starts_with(&format!("{}/", project.worktree)) {
+                    return true;
                 }
+                // Check if cwd matches any sandbox (worktree/branch)
+                for sandbox in &project.sandboxes {
+                    if cwd.as_str() == sandbox || cwd.starts_with(&format!("{}/", sandbox)) {
+                        return true;
+                    }
+                }
+                false
+            })
+            .map(|(_, p)| *p);
+
+        if let Some(process) = matching_process {
+            log::debug!("Project {} matched to process pid={}", project.worktree, process.pid);
+            if let Some(session) = get_latest_session_for_project(&storage_path, project, process) {
+                sessions.push(session);
             }
         }
     }
@@ -114,91 +159,130 @@ fn get_opencode_sessions(processes: &[AgentProcess]) -> Vec<Session> {
     sessions
 }
 
-/// Parse a single OpenCode session from SQLite
-fn parse_opencode_session(
-    db_path: &std::path::Path,
-    project_slug: &str,
-    process: &AgentProcess,
-) -> Option<Session> {
-    use rusqlite::Connection;
+/// Load all project definitions
+fn load_projects(storage_path: &PathBuf) -> Vec<OpenCodeProject> {
+    let project_dir = storage_path.join("project");
+    let mut projects = Vec::new();
 
-    let conn = match Connection::open(db_path) {
-        Ok(c) => c,
-        Err(e) => {
-            log::warn!("Failed to open OpenCode database {:?}: {}", db_path, e);
-            return None;
-        }
-    };
-
-    // Get most recent session
-    let session_row: Result<(String, String, i64), _> = conn.query_row(
-        "SELECT id, title, updated_at FROM sessions ORDER BY updated_at DESC LIMIT 1",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    );
-
-    let (session_id, _title, updated_at) = match session_row {
-        Ok(r) => r,
-        Err(_) => return None,
-    };
-
-    // Get last message for status detection
-    let last_msg: Result<(String, Option<i64>), _> = conn.query_row(
-        "SELECT role, finished_at FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
-        [&session_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    );
-
-    let status = match last_msg {
-        Ok((role, finished_at)) => {
-            if process.cpu_usage > 5.0 {
-                SessionStatus::Processing
-            } else if role == "assistant" && finished_at.is_some() {
-                SessionStatus::Waiting
-            } else if role == "user" {
-                SessionStatus::Processing
-            } else {
-                SessionStatus::Idle
+    if let Ok(entries) = std::fs::read_dir(&project_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(project) = serde_json::from_str::<OpenCodeProject>(&content) {
+                        projects.push(project);
+                    }
+                }
             }
         }
-        Err(_) => SessionStatus::Idle,
+    }
+
+    projects
+}
+
+/// Get the latest session for a project
+fn get_latest_session_for_project(
+    storage_path: &PathBuf,
+    project: &OpenCodeProject,
+    process: &AgentProcess,
+) -> Option<Session> {
+    let session_dir = storage_path.join("session").join(&project.id);
+
+    if !session_dir.exists() {
+        return None;
+    }
+
+    // Find the most recently updated session file
+    let mut latest_session: Option<(OpenCodeSession, u64)> = None;
+
+    if let Ok(entries) = std::fs::read_dir(&session_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(session) = serde_json::from_str::<OpenCodeSession>(&content) {
+                        let updated = session.time.updated;
+                        if latest_session.as_ref().map(|(_, t)| updated > *t).unwrap_or(true) {
+                            latest_session = Some((session, updated));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let (session, _) = latest_session?;
+
+    // Get the last message for status detection
+    let (last_role, last_message_time) = get_last_message(storage_path, &session.id);
+
+    // Determine status
+    let status = if process.cpu_usage > 5.0 {
+        SessionStatus::Processing
+    } else if last_role.as_deref() == Some("assistant") {
+        SessionStatus::Waiting
+    } else if last_role.as_deref() == Some("user") {
+        SessionStatus::Processing
+    } else {
+        SessionStatus::Idle
     };
 
-    // Get last message content for preview
-    let last_message: Option<String> = conn
-        .query_row(
-            "SELECT parts FROM messages WHERE session_id = ? ORDER BY created_at DESC LIMIT 1",
-            [&session_id],
-            |row| row.get(0),
-        )
-        .ok();
-
-    // Convert timestamp to ISO string
-    let last_activity_at = chrono::DateTime::from_timestamp(updated_at, 0)
+    // Convert timestamp to ISO string (OpenCode uses milliseconds)
+    let updated_secs = session.time.updated / 1000;
+    let last_activity_at = chrono::DateTime::from_timestamp(updated_secs as i64, 0)
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    // Extract project name from slug
-    let project_name = project_slug
-        .split('-')
+    // Extract project name from worktree path
+    let project_name = project.worktree
+        .split('/')
         .filter(|s| !s.is_empty())
         .last()
-        .unwrap_or(project_slug)
+        .unwrap_or("Unknown")
         .to_string();
 
     Some(Session {
-        id: session_id,
+        id: session.id,
         agent_type: AgentType::OpenCode,
         project_name,
-        project_path: format!("~/.local/share/opencode/project/{}", project_slug),
+        project_path: project.worktree.clone(),
         git_branch: None,
         github_url: None,
         status,
-        last_message,
-        last_message_role: None,
+        last_message: Some(session.title.clone()).filter(|t| !t.is_empty()),
+        last_message_role: last_role,
         last_activity_at,
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
     })
+}
+
+/// Get the last message role and time for a session
+fn get_last_message(storage_path: &PathBuf, session_id: &str) -> (Option<String>, u64) {
+    let message_dir = storage_path.join("message").join(session_id);
+
+    if !message_dir.exists() {
+        return (None, 0);
+    }
+
+    let mut latest: Option<(String, u64)> = None;
+
+    if let Ok(entries) = std::fs::read_dir(&message_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(msg) = serde_json::from_str::<OpenCodeMessage>(&content) {
+                        let created = msg.time.created;
+                        if latest.as_ref().map(|(_, t)| created > *t).unwrap_or(true) {
+                            latest = Some((msg.role, created));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    latest.map(|(role, time)| (Some(role), time)).unwrap_or((None, 0))
 }
