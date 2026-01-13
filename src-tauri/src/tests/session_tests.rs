@@ -1,12 +1,10 @@
-use crate::process::ClaudeProcess;
 use crate::session::{
-    SessionStatus, parse_session_file, convert_dir_name_to_path, convert_path_to_dir_name,
+    AgentType, SessionStatus, parse_session_file, convert_dir_name_to_path, convert_path_to_dir_name,
     determine_status, status_sort_priority, has_tool_use, has_tool_result, is_local_slash_command,
     is_interrupted_request
 };
 use serde_json::json;
 use std::io::Write;
-use std::path::PathBuf;
 use std::time::{SystemTime, Duration};
 use tempfile::NamedTempFile;
 
@@ -32,14 +30,9 @@ fn create_test_jsonl_old(lines: &[&str]) -> NamedTempFile {
     file
 }
 
-fn create_test_process() -> ClaudeProcess {
-    ClaudeProcess {
-        pid: 12345,
-        cwd: Some(PathBuf::from("/Users/test/Projects/test-project")),
-        cpu_usage: 0.0,
-        memory: 0,
-    }
-}
+// Test constants for process info
+const TEST_PID: u32 = 12345;
+const TEST_CPU_USAGE: f32 = 0.0;
 
 // Unit tests for helper functions
 
@@ -436,8 +429,7 @@ fn test_parse_jsonl_assistant_text_only_is_waiting() {
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello! How can I help you today?"}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -454,8 +446,7 @@ fn test_parse_jsonl_assistant_with_tool_use_is_processing() {
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Let me list the files"},{"type":"tool_use","id":"123","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -472,8 +463,7 @@ fn test_parse_jsonl_user_message_is_thinking() {
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"Fix the bug in main.rs"},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -491,8 +481,7 @@ fn test_parse_jsonl_user_tool_result_is_thinking() {
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"123","content":"file1.txt\nfile2.txt"}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -511,8 +500,7 @@ fn test_parse_jsonl_local_command_is_waiting() {
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"/clear"},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -532,8 +520,7 @@ fn test_parse_jsonl_complex_conversation_flow() {
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I found 2 files: file1.txt and file2.txt"}]},"timestamp":"2024-01-01T00:00:03Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -550,8 +537,7 @@ fn test_parse_jsonl_multiple_tool_calls_in_progress() {
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"I'll run the tests first"},{"type":"tool_use","id":"tool1","name":"Bash","input":{"command":"npm test"}}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();
@@ -569,8 +555,7 @@ fn test_parse_jsonl_empty_content_skipped() {
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hi there!"}]},"timestamp":"2024-01-01T00:00:02Z"}"#,
     ]);
 
-    let process = create_test_process();
-    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", &process);
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
 
     assert!(session.is_some());
     let session = session.unwrap();

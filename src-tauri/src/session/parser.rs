@@ -7,8 +7,8 @@ use std::process::Command;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
-use crate::process::ClaudeProcess;
-use super::model::{Session, SessionStatus, SessionsResponse, JsonlMessage};
+use crate::agent::AgentProcess;
+use super::model::{AgentType, Session, SessionStatus, SessionsResponse, JsonlMessage};
 use super::status::{determine_status, has_tool_use, has_tool_result, is_local_slash_command, is_interrupted_request, status_sort_priority};
 
 /// Track previous status for each session to detect transitions
@@ -178,20 +178,22 @@ pub fn convert_dir_name_to_path(dir_name: &str) -> String {
     }
 }
 
-/// Get all active Claude Code sessions
+/// Get all active Claude Code sessions (delegates to agent module)
 pub fn get_sessions() -> SessionsResponse {
-    use crate::process::find_claude_processes;
+    crate::agent::get_all_sessions()
+}
 
-    info!("=== Getting all sessions ===");
-
-    let claude_processes = find_claude_processes();
-    debug!("Found {} Claude processes total", claude_processes.len());
+/// Internal function to get sessions for a specific agent type
+/// Called by agent detectors (ClaudeDetector, OpenCodeDetector, etc.)
+pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) -> Vec<Session> {
+    info!("=== Getting sessions for {:?} ===", agent_type);
+    debug!("Found {} processes total", processes.len());
 
     let mut sessions = Vec::new();
 
     // Build a map of cwd -> list of processes (multiple sessions can run in same folder)
-    let mut cwd_to_processes: HashMap<String, Vec<&ClaudeProcess>> = HashMap::new();
-    for process in &claude_processes {
+    let mut cwd_to_processes: HashMap<String, Vec<&AgentProcess>> = HashMap::new();
+    for process in processes {
         if let Some(cwd) = &process.cwd {
             let cwd_str = cwd.to_string_lossy().to_string();
             debug!("Mapping process pid={} to cwd={}", process.pid, cwd_str);
@@ -210,11 +212,7 @@ pub fn get_sessions() -> SessionsResponse {
 
     if !claude_dir.exists() {
         warn!("Claude projects directory does not exist: {:?}", claude_dir);
-        return SessionsResponse {
-            sessions: vec![],
-            total_count: 0,
-            waiting_count: 0,
-        };
+        return sessions;
     }
 
     // For each project directory
@@ -233,9 +231,9 @@ pub fn get_sessions() -> SessionsResponse {
             let project_path = convert_dir_name_to_path(dir_name);
             debug!("Checking project: {} -> {}", dir_name, project_path);
 
-            // Check if this project has active Claude processes
+            // Check if this project has active processes
             // First try exact match
-            let processes = if let Some(p) = cwd_to_processes.get(&project_path) {
+            let matching_processes = if let Some(p) = cwd_to_processes.get(&project_path) {
                 debug!("Project {} has {} active processes (exact match)", project_path, p.len());
                 p
             } else {
@@ -259,13 +257,13 @@ pub fn get_sessions() -> SessionsResponse {
 
             // Find all JSONL files that were recently modified (within last 30 seconds)
             // These are likely the active sessions
-            let jsonl_files = get_recently_active_jsonl_files(&path, processes.len());
+            let jsonl_files = get_recently_active_jsonl_files(&path, matching_processes.len());
             debug!("Found {} JSONL files for project {}", jsonl_files.len(), project_path);
 
             // Match processes to JSONL files
-            for (index, process) in processes.iter().enumerate() {
+            for (index, process) in matching_processes.iter().enumerate() {
                 debug!("Matching process pid={} to JSONL file index {}", process.pid, index);
-                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, index) {
+                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, index, agent_type.clone()) {
                     // Track status transitions
                     let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
                     let prev_status = prev_status_map.get(&session.id).cloned();
@@ -296,35 +294,12 @@ pub fn get_sessions() -> SessionsResponse {
         }
     }
 
-    // Sort by status priority first, then by most recent activity within same priority
-    // Priority: Waiting (needs attention) > Thinking/Processing (active) > Idle
-    // Within same priority, sort by most recent activity
-    sessions.sort_by(|a, b| {
-        let priority_a = status_sort_priority(&a.status);
-        let priority_b = status_sort_priority(&b.status);
-
-        if priority_a != priority_b {
-            priority_a.cmp(&priority_b)
-        } else {
-            b.last_activity_at.cmp(&a.last_activity_at)
-        }
-    });
-
-    let waiting_count = sessions.iter()
-        .filter(|s| matches!(s.status, SessionStatus::Waiting))
-        .count();
-    let total_count = sessions.len();
-
     info!(
-        "=== Session scan complete: {} total, {} waiting ===",
-        total_count, waiting_count
+        "=== Session scan complete for {:?}: {} total ===",
+        agent_type, sessions.len()
     );
 
-    SessionsResponse {
-        sessions,
-        total_count,
-        waiting_count,
-    }
+    sessions
 }
 
 /// Check if a JSONL file is a subagent file (named agent-*.jsonl)
@@ -420,8 +395,9 @@ fn find_session_for_process(
     jsonl_files: &[PathBuf],
     project_dir: &PathBuf,
     project_path: &str,
-    process: &ClaudeProcess,
+    process: &AgentProcess,
     index: usize,
+    agent_type: AgentType,
 ) -> Option<Session> {
     use std::time::{Duration, SystemTime};
 
@@ -429,7 +405,7 @@ fn find_session_for_process(
     let primary_jsonl = jsonl_files.get(index)?;
 
     // Parse the primary file first
-    let mut session = parse_session_file(primary_jsonl, project_path, process)?;
+    let mut session = parse_session_file(primary_jsonl, project_path, process.pid, process.cpu_usage, agent_type.clone())?;
 
     // Count active subagents for this session
     session.active_subagent_count = count_active_subagents(project_dir, &session.id);
@@ -458,7 +434,7 @@ fn find_session_for_process(
         }
 
         // Parse this file and check its status
-        if let Some(other_session) = parse_session_file(jsonl_path, project_path, process) {
+        if let Some(other_session) = parse_session_file(jsonl_path, project_path, process.pid, process.cpu_usage, agent_type.clone()) {
             // If this file shows a more active status, use it
             let current_priority = status_sort_priority(&session.status);
             let other_priority = status_sort_priority(&other_session.status);
@@ -488,7 +464,13 @@ fn find_session_for_process(
 }
 
 /// Parse a JSONL session file and create a Session struct
-pub fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &ClaudeProcess) -> Option<Session> {
+pub fn parse_session_file(
+    jsonl_path: &PathBuf,
+    project_path: &str,
+    pid: u32,
+    cpu_usage: f32,
+    agent_type: AgentType,
+) -> Option<Session> {
     use std::time::SystemTime;
 
     debug!("Parsing JSONL file: {:?}", jsonl_path);
@@ -644,6 +626,7 @@ pub fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &Cl
 
     Some(Session {
         id: session_id,
+        agent_type,
         project_name,
         project_path: project_path.to_string(),
         git_branch,
@@ -652,8 +635,8 @@ pub fn parse_session_file(jsonl_path: &PathBuf, project_path: &str, process: &Cl
         last_message,
         last_message_role: last_role,
         last_activity_at: last_timestamp.unwrap_or_else(|| "Unknown".to_string()),
-        pid: process.pid,
-        cpu_usage: process.cpu_usage,
+        pid,
+        cpu_usage,
         active_subagent_count: 0, // Set by find_session_for_process
     })
 }
