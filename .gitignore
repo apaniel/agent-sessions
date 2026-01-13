@@ -30,3 +30,6 @@ release/
 
 # Environment variables
 .env
+
+# Worktrees
+.worktrees/
