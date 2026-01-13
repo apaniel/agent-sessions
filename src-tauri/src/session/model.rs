@@ -1,10 +1,19 @@
 use serde::{Deserialize, Serialize};
 
+/// Type of AI coding agent
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum AgentType {
+    Claude,
+    OpenCode,
+}
+
 /// Represents a Claude Code session
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Session {
     pub id: String,
+    pub agent_type: AgentType,
     pub project_name: String,
     pub project_path: String,
     pub git_branch: Option<String>,

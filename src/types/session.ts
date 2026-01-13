@@ -1,7 +1,10 @@
 export type SessionStatus = 'waiting' | 'processing' | 'thinking' | 'idle';
 
+export type AgentType = 'claude' | 'opencode';
+
 export interface Session {
   id: string;
+  agentType: AgentType;
   projectName: string;
   projectPath: string;
   gitBranch: string | null;
