@@ -70,6 +70,14 @@ struct OpenCodeMessage {
     time: OpenCodeTime,
 }
 
+#[derive(Deserialize)]
+struct OpenCodePart {
+    #[serde(rename = "type")]
+    part_type: String,
+    #[serde(default)]
+    text: Option<String>,
+}
+
 // Reuse System instance to get accurate CPU readings (requires previous measurement)
 static OPENCODE_SYSTEM: std::sync::Mutex<Option<sysinfo::System>> = std::sync::Mutex::new(None);
 
@@ -238,8 +246,8 @@ fn get_latest_session_for_project(
 
     let (session, _) = latest_session?;
 
-    // Get the last message for status detection
-    let (last_role, last_message_time) = get_last_message(storage_path, &session.id);
+    // Get the last message for status detection and display
+    let (last_role, last_message_text, _last_message_time) = get_last_message(storage_path, &session.id);
 
     // Determine status
     let status = if process.cpu_usage > 5.0 {
@@ -258,23 +266,38 @@ fn get_latest_session_for_project(
         .map(|dt| dt.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string())
         .unwrap_or_else(|| "Unknown".to_string());
 
-    // Extract project name from worktree path
-    let project_name = project.worktree
+    // Use actual process CWD for display (may be sandbox/worktree path)
+    let actual_path = process.cwd
+        .as_ref()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| project.worktree.clone());
+
+    // Extract project name from actual path
+    let project_name = actual_path
         .split('/')
         .filter(|s| !s.is_empty())
         .last()
         .unwrap_or("Unknown")
         .to_string();
 
+    log::info!(
+        "OpenCode session: id={}, project={}, status={:?}, last_role={:?}, cpu={:.1}%",
+        session.id, project_name, status, last_role, process.cpu_usage
+    );
+
+    // Use message text if available, fall back to session title
+    let display_message = last_message_text
+        .or_else(|| Some(session.title.clone()).filter(|t| !t.is_empty()));
+
     Some(Session {
         id: session.id,
         agent_type: AgentType::OpenCode,
         project_name,
-        project_path: project.worktree.clone(),
+        project_path: actual_path,
         git_branch: None,
         github_url: None,
         status,
-        last_message: Some(session.title.clone()).filter(|t| !t.is_empty()),
+        last_message: display_message,
         last_message_role: last_role,
         last_activity_at,
         pid: process.pid,
@@ -283,15 +306,15 @@ fn get_latest_session_for_project(
     })
 }
 
-/// Get the last message role and time for a session
-fn get_last_message(storage_path: &PathBuf, session_id: &str) -> (Option<String>, u64) {
+/// Get the last message role, time, and text for a session
+fn get_last_message(storage_path: &PathBuf, session_id: &str) -> (Option<String>, Option<String>, u64) {
     let message_dir = storage_path.join("message").join(session_id);
 
     if !message_dir.exists() {
-        return (None, 0);
+        return (None, None, 0);
     }
 
-    let mut latest: Option<(String, u64)> = None;
+    let mut latest: Option<(String, String, u64)> = None; // (role, message_id, created)
 
     if let Ok(entries) = std::fs::read_dir(&message_dir) {
         for entry in entries.flatten() {
@@ -300,8 +323,8 @@ fn get_last_message(storage_path: &PathBuf, session_id: &str) -> (Option<String>
                 if let Ok(content) = std::fs::read_to_string(&path) {
                     if let Ok(msg) = serde_json::from_str::<OpenCodeMessage>(&content) {
                         let created = msg.time.created;
-                        if latest.as_ref().map(|(_, t)| created > *t).unwrap_or(true) {
-                            latest = Some((msg.role, created));
+                        if latest.as_ref().map(|(_, _, t)| created > *t).unwrap_or(true) {
+                            latest = Some((msg.role, msg.id, created));
                         }
                     }
                 }
@@ -309,5 +332,46 @@ fn get_last_message(storage_path: &PathBuf, session_id: &str) -> (Option<String>
         }
     }
 
-    latest.map(|(role, time)| (Some(role), time)).unwrap_or((None, 0))
+    // Get the text content from the message parts
+    if let Some((role, message_id, time)) = latest {
+        let text = get_message_text(storage_path, &message_id);
+        (Some(role), text, time)
+    } else {
+        (None, None, 0)
+    }
+}
+
+/// Get the text content from a message's parts
+fn get_message_text(storage_path: &PathBuf, message_id: &str) -> Option<String> {
+    let part_dir = storage_path.join("part").join(message_id);
+
+    if !part_dir.exists() {
+        return None;
+    }
+
+    // Find the "text" type part
+    if let Ok(entries) = std::fs::read_dir(&part_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().map(|e| e == "json").unwrap_or(false) {
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    if let Ok(part) = serde_json::from_str::<OpenCodePart>(&content) {
+                        if part.part_type == "text" {
+                            if let Some(text) = part.text {
+                                // Truncate if too long
+                                let truncated = if text.len() > 200 {
+                                    format!("{}...", &text[..197])
+                                } else {
+                                    text
+                                };
+                                return Some(truncated);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
 }
