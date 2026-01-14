@@ -92,14 +92,15 @@ pub fn unregister_shortcut(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// Kill a Claude Code process by PID
+/// Kill an agent process by PID
 #[tauri::command]
 pub fn kill_session(pid: u32) -> Result<(), String> {
     use std::process::Command;
 
-    // Use kill command to terminate the process
+    // Use SIGKILL (-9) to forcefully terminate the process
+    // SIGTERM often doesn't work for agent processes with child processes
     let output = Command::new("kill")
-        .arg("-TERM")
+        .arg("-9")
         .arg(pid.to_string())
         .output()
         .map_err(|e| format!("Failed to execute kill command: {}", e))?;
