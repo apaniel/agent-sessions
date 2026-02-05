@@ -96,9 +96,9 @@ pub fn status_sort_priority(status: &SessionStatus) -> u8 {
 ///
 /// Status determination logic:
 /// - If file is being actively modified (within last 3s) -> active state (Thinking or Processing)
-/// - If last message is user with tool_result -> Processing (tool just ran, Claude processing result)
-/// - If last message is from assistant with tool_use AND file recently modified -> Processing
-/// - If last message is from assistant with tool_use AND file stale -> Waiting (stuck/needs attention)
+/// - If last message is from assistant with tool_use AND file active (within 30s) -> Processing
+///   (tools can take seconds to minutes; progress entries are written sporadically)
+/// - If last message is from assistant with tool_use AND file stale (>30s) -> Waiting (stuck)
 /// - If last message is from assistant with only text -> Waiting (Claude finished, waiting for user)
 /// - If last message is from user -> Thinking (Claude is generating a response)
 /// - If last message is a local slash command (/clear, /help, etc.) -> Waiting (these don't trigger Claude)
@@ -110,16 +110,22 @@ pub fn determine_status(
     is_local_command: bool,
     is_interrupted: bool,
     file_recently_modified: bool,
+    file_age_secs: Option<f32>,
 ) -> SessionStatus {
+    // Tool execution uses a longer activity window (30s) because:
+    // - Tools can take seconds or minutes to complete
+    // - Progress entries are written sporadically (every 6-10s)
+    // - The 3-second threshold misses ongoing tool execution
+    let file_active_for_tool = file_age_secs.map(|age| age < 30.0).unwrap_or(false);
+
     match last_msg_type {
         Some("assistant") => {
             if has_tool_use {
-                if file_recently_modified {
-                    // Tool is actively executing (file still being updated)
+                if file_recently_modified || file_active_for_tool {
+                    // Tool is executing - file has been updated within the tool activity window
                     SessionStatus::Processing
                 } else {
-                    // Tool_use sent but no activity - session is stuck/waiting
-                    // This happens when tool execution hangs or user hasn't responded
+                    // Tool_use sent but no file activity for >30s - session is stuck/waiting
                     SessionStatus::Waiting
                 }
             } else if file_recently_modified {
@@ -139,7 +145,7 @@ pub fn determine_status(
                 SessionStatus::Waiting
             } else if has_tool_result {
                 // User message contains tool_result - tool execution complete
-                if file_recently_modified {
+                if file_recently_modified || file_active_for_tool {
                     // Claude is actively processing the result
                     SessionStatus::Thinking
                 } else {

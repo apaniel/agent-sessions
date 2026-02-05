@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.22] - 2026-02-06
+
+### Fixed
+- Use 30-second activity window for tool execution status instead of 3 seconds
+- Sessions running tools no longer flicker to "waiting" between progress writes
+
 ## [0.1.21] - 2026-02-05
 
 ### Fixed

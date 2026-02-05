@@ -219,14 +219,15 @@ fn test_is_local_slash_command() {
 
 #[test]
 fn test_determine_status_assistant_with_tool_use() {
-    // Assistant message with tool_use but stale file -> Waiting (stuck)
+    // Assistant message with tool_use, file stale (>30s) -> Waiting (stuck)
     let status = determine_status(
         Some("assistant"),
         true,  // has_tool_use
         false, // has_tool_result
         false, // is_local_command
         false, // is_interrupted
-        false, // file_recently_modified - stale means stuck
+        false, // file_recently_modified
+        Some(60.0), // file_age_secs - old, tool is stuck
     );
     assert!(matches!(status, SessionStatus::Waiting));
 
@@ -238,8 +239,22 @@ fn test_determine_status_assistant_with_tool_use() {
         false,
         false,
         true, // file_recently_modified
+        Some(1.0),
     );
     assert!(matches!(status, SessionStatus::Processing));
+
+    // Tool_use with file modified 15s ago (within 30s tool window) -> Processing
+    let status = determine_status(
+        Some("assistant"),
+        true,
+        false,
+        false,
+        false,
+        false, // file_recently_modified is false (>3s)
+        Some(15.0), // but within 30s tool activity window
+    );
+    assert!(matches!(status, SessionStatus::Processing),
+        "Expected Processing when tool_use and file active within 30s, got {:?}", status);
 }
 
 #[test]
@@ -252,6 +267,7 @@ fn test_determine_status_assistant_text_only() {
         false,
         false, // is_interrupted
         false,
+        Some(10.0),
     );
     assert!(matches!(status, SessionStatus::Waiting));
 
@@ -263,6 +279,7 @@ fn test_determine_status_assistant_text_only() {
         false,
         false, // is_interrupted
         true, // file_recently_modified
+        Some(1.0),
     );
     assert!(matches!(status, SessionStatus::Processing));
 }
@@ -277,6 +294,7 @@ fn test_determine_status_user_message() {
         false, // not a local command
         false, // is_interrupted
         true,  // file_recently_modified - actively responding
+        Some(1.0),
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
@@ -288,6 +306,7 @@ fn test_determine_status_user_message() {
         false, // not a local command
         false, // is_interrupted
         false, // file not recently modified - stuck
+        Some(60.0),
     );
     assert!(matches!(status, SessionStatus::Waiting));
 
@@ -299,6 +318,7 @@ fn test_determine_status_user_message() {
         true, // is_local_command
         false, // is_interrupted
         false,
+        Some(10.0),
     );
     assert!(matches!(status, SessionStatus::Waiting));
 
@@ -310,6 +330,7 @@ fn test_determine_status_user_message() {
         false,
         true, // is_interrupted
         false,
+        Some(10.0),
     );
     assert!(matches!(status, SessionStatus::Waiting));
 }
@@ -324,6 +345,7 @@ fn test_determine_status_user_with_tool_result() {
         false,
         false, // is_interrupted
         true,  // file_recently_modified
+        Some(1.0),
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
@@ -335,8 +357,22 @@ fn test_determine_status_user_with_tool_result() {
         false,
         false, // is_interrupted
         false, // not recently modified - stuck
+        Some(60.0),
     );
     assert!(matches!(status, SessionStatus::Waiting));
+
+    // User message with tool_result, file 10s old (within 30s tool window) -> Thinking
+    let status = determine_status(
+        Some("user"),
+        false,
+        true,
+        false,
+        false,
+        false, // not recently modified (>3s)
+        Some(10.0), // within 30s tool activity window
+    );
+    assert!(matches!(status, SessionStatus::Thinking),
+        "Expected Thinking when tool_result and file active within 30s, got {:?}", status);
 }
 
 #[test]
@@ -349,6 +385,7 @@ fn test_determine_status_unknown_type() {
         false,
         false, // is_interrupted
         true, // file_recently_modified
+        Some(1.0),
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
@@ -360,6 +397,7 @@ fn test_determine_status_unknown_type() {
         false,
         false, // is_interrupted
         false,
+        Some(60.0),
     );
     assert!(matches!(status, SessionStatus::Idle));
 }

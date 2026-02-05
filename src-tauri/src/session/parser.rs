@@ -599,11 +599,12 @@ pub fn parse_session_file(
         last_is_local_command,
         last_is_interrupted,
         file_recently_modified,
+        file_age_secs,
     );
 
     debug!(
-        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, recent={} -> {:?}",
-        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, file_recently_modified, status
+        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, recent={}, file_age={:.1}s -> {:?}",
+        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, file_recently_modified, file_age_secs.unwrap_or(-1.0), status
     );
 
     // Extract project name from path
