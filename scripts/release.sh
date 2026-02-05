@@ -36,7 +36,7 @@ build_arch() {
 
     echo "=== Building for $arch ($target) ==="
     cd "$PROJECT_ROOT"
-    npm run tauri build -- --target "$target"
+    npm run tauri build -- --target "$target" --bundles app
     echo "Build complete for $arch"
 }
 
