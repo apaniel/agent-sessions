@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.24] - 2026-02-06
+
+### Added
+- "Compacting" status shown when a session is compressing its conversation context
+
 ## [0.1.23] - 2026-02-06
 
 ### Fixed

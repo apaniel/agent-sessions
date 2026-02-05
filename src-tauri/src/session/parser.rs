@@ -508,6 +508,7 @@ pub fn parse_session_file(
     let mut last_is_local_command = false;
     let mut last_is_interrupted = false;
     let mut found_status_info = false;
+    let mut is_compacting = false;
 
     // Read last N lines for efficiency
     // Must be large enough to cover long stretches of progress entries during tool execution
@@ -527,6 +528,20 @@ pub fn parse_session_file(
             }
             if last_timestamp.is_none() {
                 last_timestamp = msg.timestamp;
+            }
+
+            // Detect compaction: if we see compact_boundary before any content message
+            // or isCompactSummary, the session is currently compacting.
+            // Reading from newest to oldest: if compact_boundary comes first → compacting
+            // If isCompactSummary comes first → compaction already finished
+            if !found_status_info && !is_compacting {
+                if msg.is_compact_summary == Some(true) {
+                    // Compaction finished, summary already written - not compacting
+                    // Continue to find status info normally
+                } else if msg.subtype.as_deref() == Some("compact_boundary") {
+                    is_compacting = true;
+                    debug!("Detected active compaction (compact_boundary before any content)");
+                }
             }
 
             // For status detection, we need to find the most recent message that has CONTENT
@@ -594,18 +609,22 @@ pub fn parse_session_file(
     let session_id = session_id?;
 
     // Determine status based on message content — no file age or CPU heuristics
-    let status = determine_status(
-        last_msg_type.as_deref(),
-        last_has_tool_use,
-        last_has_tool_result,
-        last_is_local_command,
-        last_is_interrupted,
-        file_recently_modified,
-    );
+    let status = if is_compacting {
+        SessionStatus::Compacting
+    } else {
+        determine_status(
+            last_msg_type.as_deref(),
+            last_has_tool_use,
+            last_has_tool_result,
+            last_is_local_command,
+            last_is_interrupted,
+            file_recently_modified,
+        )
+    };
 
     debug!(
-        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, recent={}, file_age={:.1}s -> {:?}",
-        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, file_recently_modified, file_age_secs.unwrap_or(-1.0), status
+        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, recent={}, compacting={}, file_age={:.1}s -> {:?}",
+        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, file_recently_modified, is_compacting, file_age_secs.unwrap_or(-1.0), status
     );
 
     // Extract project name from path

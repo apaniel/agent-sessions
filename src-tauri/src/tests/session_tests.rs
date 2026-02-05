@@ -391,6 +391,9 @@ fn test_status_sort_priority() {
     // Waiting has second priority (1)
     assert_eq!(status_sort_priority(&SessionStatus::Waiting), 1);
 
+    // Compacting has highest priority (0)
+    assert_eq!(status_sort_priority(&SessionStatus::Compacting), 0);
+
     // Idle has lowest priority (2)
     assert_eq!(status_sort_priority(&SessionStatus::Idle), 2);
 
@@ -413,6 +416,10 @@ fn test_session_status_serialization() {
     let processing = SessionStatus::Processing;
     let serialized = serde_json::to_string(&processing).unwrap();
     assert_eq!(serialized, "\"processing\"");
+
+    let compacting = SessionStatus::Compacting;
+    let serialized = serde_json::to_string(&compacting).unwrap();
+    assert_eq!(serialized, "\"compacting\"");
 
     let idle = SessionStatus::Idle;
     let serialized = serde_json::to_string(&idle).unwrap();

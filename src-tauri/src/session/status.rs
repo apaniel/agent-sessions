@@ -85,10 +85,11 @@ pub fn is_local_slash_command(content: &serde_json::Value) -> bool {
 /// Active sessions (thinking/processing) appear first, then waiting, then idle
 pub fn status_sort_priority(status: &SessionStatus) -> u8 {
     match status {
-        SessionStatus::Thinking => 0,   // Active - Claude is working - show first
-        SessionStatus::Processing => 0, // Active - tool is running - show first
-        SessionStatus::Waiting => 1,    // Needs attention - show second
-        SessionStatus::Idle => 2,       // Inactive - show last
+        SessionStatus::Thinking => 0,    // Active - Claude is working - show first
+        SessionStatus::Processing => 0,  // Active - tool is running - show first
+        SessionStatus::Compacting => 0,  // Active - compressing context - show first
+        SessionStatus::Waiting => 1,     // Needs attention - show second
+        SessionStatus::Idle => 2,        // Inactive - show last
     }
 }
 

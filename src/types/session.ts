@@ -1,4 +1,4 @@
-export type SessionStatus = 'waiting' | 'processing' | 'thinking' | 'idle';
+export type SessionStatus = 'waiting' | 'processing' | 'thinking' | 'compacting' | 'idle';
 
 export type AgentType = 'claude' | 'opencode';
 

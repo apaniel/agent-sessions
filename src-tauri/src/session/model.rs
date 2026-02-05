@@ -34,6 +34,7 @@ pub enum SessionStatus {
     Waiting,
     Processing,
     Thinking,
+    Compacting,
     Idle,
 }
 
@@ -56,6 +57,9 @@ pub(crate) struct JsonlMessage {
     pub timestamp: Option<String>,
     #[serde(rename = "type")]
     pub msg_type: Option<String>,
+    pub subtype: Option<String>,
+    #[serde(rename = "isCompactSummary")]
+    pub is_compact_summary: Option<bool>,
     pub message: Option<MessageContent>,
 }
 

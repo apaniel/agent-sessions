@@ -43,6 +43,14 @@ export const statusConfig = {
     badgeClassName: 'border-emerald-400/40 text-emerald-300 bg-emerald-400/20',
     label: 'Processing',
   },
+  compacting: {
+    color: 'bg-amber-400',
+    fillColor: 'fill-amber-400',
+    cardBg: 'bg-amber-400/15',
+    cardBorder: 'border-amber-400/30',
+    badgeClassName: 'border-amber-400/40 text-amber-300 bg-amber-400/20',
+    label: 'Compacting...',
+  },
   idle: {
     color: 'bg-white/30',
     fillColor: 'fill-white/30',
