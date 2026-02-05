@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.20] - 2026-02-05
+
+### Fixed
+- Filter out orphaned sessions whose terminal was closed (processes reparented to launchd)
+- Clean up stale status tracking entries to prevent unbounded memory growth
+
 ## [0.1.17] - 2025-12-07
 
 ### Fixed
