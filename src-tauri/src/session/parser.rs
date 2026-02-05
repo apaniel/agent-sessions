@@ -14,6 +14,18 @@ use super::status::{determine_status, has_tool_use, has_tool_result, is_local_sl
 /// Track previous status for each session to detect transitions
 static PREVIOUS_STATUS: Lazy<Mutex<HashMap<String, SessionStatus>>> = Lazy::new(|| Mutex::new(HashMap::new()));
 
+/// Clean up PREVIOUS_STATUS entries for sessions that no longer exist.
+/// Call this after all agent detectors have run to prevent unbounded memory growth.
+pub fn cleanup_stale_status_entries(active_session_ids: &std::collections::HashSet<String>) {
+    let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
+    let before_count = prev_status_map.len();
+    prev_status_map.retain(|id, _| active_session_ids.contains(id));
+    let removed = before_count - prev_status_map.len();
+    if removed > 0 {
+        debug!("Cleaned up {} stale entries from PREVIOUS_STATUS (kept {})", removed, prev_status_map.len());
+    }
+}
+
 /// Extract a preview of content for debugging
 fn get_content_preview(content: &serde_json::Value) -> String {
     match content {

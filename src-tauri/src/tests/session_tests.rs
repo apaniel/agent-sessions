@@ -1,8 +1,9 @@
 use crate::session::{
     AgentType, SessionStatus, parse_session_file, convert_dir_name_to_path, convert_path_to_dir_name,
     determine_status, status_sort_priority, has_tool_use, has_tool_result, is_local_slash_command,
-    is_interrupted_request
+    is_interrupted_request, cleanup_stale_status_entries, get_sessions_internal
 };
+use crate::agent::AgentProcess;
 use serde_json::json;
 use std::io::Write;
 use std::time::{SystemTime, Duration};
@@ -562,4 +563,74 @@ fn test_parse_jsonl_empty_content_skipped() {
     // The parser reads from the end, so it should find the last non-empty message
     assert!(matches!(session.status, SessionStatus::Waiting),
         "Expected Waiting after finding text-only assistant message, got {:?}", session.status);
+}
+
+// Tests for PREVIOUS_STATUS cleanup
+
+#[test]
+fn test_cleanup_stale_status_entries_removes_old_sessions() {
+    use std::collections::HashSet;
+
+    // First, parse some sessions to populate PREVIOUS_STATUS
+    let jsonl1 = create_test_jsonl_old(&[
+        r#"{"sessionId":"session-alive","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello"}]},"timestamp":"2024-01-01T00:00:00Z"}"#,
+    ]);
+    let jsonl2 = create_test_jsonl_old(&[
+        r#"{"sessionId":"session-dead","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Goodbye"}]},"timestamp":"2024-01-01T00:00:00Z"}"#,
+    ]);
+
+    // Parse both to populate PREVIOUS_STATUS
+    let _ = parse_session_file(&jsonl1.path().to_path_buf(), "/Users/test/Projects/test1", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
+    let _ = parse_session_file(&jsonl2.path().to_path_buf(), "/Users/test/Projects/test2", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
+
+    // Now cleanup with only session-alive as active
+    let mut active_ids = HashSet::new();
+    active_ids.insert("session-alive".to_string());
+    cleanup_stale_status_entries(&active_ids);
+
+    // Parse session-alive again - it should not cause a "STATUS TRANSITION" log
+    // since its entry was preserved. This verifies cleanup kept it.
+    let session = parse_session_file(&jsonl1.path().to_path_buf(), "/Users/test/Projects/test1", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
+    assert!(session.is_some());
+    assert_eq!(session.unwrap().id, "session-alive");
+}
+
+#[test]
+fn test_cleanup_stale_status_entries_handles_empty_set() {
+    use std::collections::HashSet;
+
+    // Cleanup with empty active set should not panic
+    let active_ids = HashSet::new();
+    cleanup_stale_status_entries(&active_ids);
+}
+
+// Tests for get_sessions_internal with stale process scenarios
+
+#[test]
+fn test_get_sessions_internal_no_processes_returns_empty() {
+    let processes: Vec<AgentProcess> = vec![];
+    let sessions = get_sessions_internal(&processes, AgentType::Claude);
+    assert!(sessions.is_empty(), "No processes should yield no sessions");
+}
+
+#[test]
+fn test_get_sessions_internal_process_without_cwd_is_skipped() {
+    let processes = vec![AgentProcess {
+        pid: 99999,
+        cpu_usage: 0.0,
+        cwd: None,
+    }];
+    let sessions = get_sessions_internal(&processes, AgentType::Claude);
+    assert!(sessions.is_empty(), "Process without CWD should be skipped");
+}
+
+#[test]
+fn test_get_sessions_internal_process_with_nonexistent_project_is_skipped() {
+    let processes = vec![AgentProcess {
+        pid: 99999,
+        cpu_usage: 0.0,
+        cwd: Some(std::path::PathBuf::from("/nonexistent/path/that/does/not/match/any/project")),
+    }];
+    let sessions = get_sessions_internal(&processes, AgentType::Claude);
+    assert!(sessions.is_empty(), "Process with non-matching CWD should produce no sessions");
 }

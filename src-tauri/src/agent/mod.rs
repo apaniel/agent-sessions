@@ -28,7 +28,8 @@ pub trait AgentDetector: Send + Sync {
 
 /// Get all sessions from all registered agent detectors
 pub fn get_all_sessions() -> SessionsResponse {
-    use crate::session::status_sort_priority;
+    use std::collections::HashSet;
+    use crate::session::{status_sort_priority, cleanup_stale_status_entries};
 
     let detectors: Vec<Box<dyn AgentDetector>> = vec![
         Box::new(claude::ClaudeDetector),
@@ -44,6 +45,10 @@ pub fn get_all_sessions() -> SessionsResponse {
             detector.name(), processes.len(), sessions.len());
         all_sessions.extend(sessions);
     }
+
+    // Clean up stale status tracking entries for sessions that no longer exist
+    let active_ids: HashSet<String> = all_sessions.iter().map(|s| s.id.clone()).collect();
+    cleanup_stale_status_entries(&active_ids);
 
     // Sort by status priority first, then by most recent activity
     all_sessions.sort_by(|a, b| {

@@ -1,4 +1,4 @@
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use serde::{Deserialize, Serialize};
 use sysinfo::{ProcessRefreshKind, RefreshKind, System};
 use std::path::PathBuf;
@@ -16,8 +16,42 @@ pub struct ClaudeProcess {
 // Reuse System instance to avoid expensive re-initialization
 static SYSTEM: Mutex<Option<System>> = Mutex::new(None);
 
+/// Check if a process is orphaned by examining its parent chain.
+/// A process is considered orphaned if its parent shell has been reparented
+/// to launchd/init (PID 1), indicating the original terminal was closed.
+///
+/// Parent chain for healthy sessions: claude → shell → terminal_emulator
+/// Parent chain for orphaned sessions: claude → shell (PPID=1) → launchd
+pub fn is_orphaned_process(system: &System, process: &sysinfo::Process) -> bool {
+    let parent_pid = match process.parent() {
+        Some(pid) => pid,
+        None => return true, // No parent at all - definitely orphaned
+    };
+
+    // If parent is PID 1 directly, process is orphaned
+    if parent_pid.as_u32() == 1 {
+        return true;
+    }
+
+    // Check grandparent - if parent's parent is PID 1, terminal was closed
+    // and the parent shell was reparented to launchd/init
+    if let Some(parent_process) = system.process(parent_pid) {
+        if let Some(grandparent_pid) = parent_process.parent() {
+            if grandparent_pid.as_u32() == 1 {
+                return true;
+            }
+        }
+    } else {
+        // Parent process doesn't exist in the system - orphaned
+        return true;
+    }
+
+    false
+}
+
 /// Find all running Claude Code processes on the system
 /// Filters out sub-agent processes (whose parent is also a Claude process)
+/// and orphaned processes (whose terminal has been closed)
 pub fn find_claude_processes() -> Vec<ClaudeProcess> {
     use std::collections::HashSet;
     use sysinfo::Pid;
@@ -70,7 +104,7 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
 
     let mut processes = Vec::new();
 
-    // Second pass: collect Claude processes, excluding sub-agents
+    // Second pass: collect Claude processes, excluding sub-agents and orphans
     for (pid, process) in system.processes() {
         let cmd = process.cmd();
         let process_name = process.name().to_string_lossy();
@@ -127,6 +161,17 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 }
             }
 
+            // Check if process is orphaned (terminal was closed)
+            if is_orphaned_process(system, process) {
+                warn!(
+                    "Skipping orphaned process: pid={}, cwd={:?}, cpu={:.1}% (parent shell reparented to launchd)",
+                    pid.as_u32(),
+                    cwd,
+                    process.cpu_usage()
+                );
+                continue;
+            }
+
             debug!(
                 "Found Claude process: pid={}, cwd={:?}, cpu={:.1}%, mem={}MB",
                 pid.as_u32(),
@@ -144,6 +189,6 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
         }
     }
 
-    debug!("Process discovery complete: found {} Claude processes (excluding sub-agents)", processes.len());
+    debug!("Process discovery complete: found {} Claude processes (excluding sub-agents and orphans)", processes.len());
     processes
 }
