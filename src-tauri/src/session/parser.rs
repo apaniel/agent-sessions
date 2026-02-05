@@ -510,8 +510,10 @@ pub fn parse_session_file(
     let mut found_status_info = false;
 
     // Read last N lines for efficiency
+    // Must be large enough to cover long stretches of progress entries during tool execution
+    // (observed up to 275 consecutive non-content lines in real sessions)
     let lines: Vec<_> = reader.lines().flatten().collect();
-    let recent_lines: Vec<_> = lines.iter().rev().take(100).collect();
+    let recent_lines: Vec<_> = lines.iter().rev().take(500).collect();
 
     trace!("File has {} total lines, checking last {}", lines.len(), recent_lines.len());
 

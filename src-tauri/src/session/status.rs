@@ -161,11 +161,12 @@ pub fn determine_status(
             }
         }
         _ => {
-            // No recognized message type - check if file is active
-            if file_recently_modified {
-                SessionStatus::Thinking
+            // No recognized message type (e.g., only progress entries in lookback window)
+            // Since this is called for sessions with active processes, never return Idle
+            if file_recently_modified || file_active_for_tool {
+                SessionStatus::Processing
             } else {
-                SessionStatus::Idle
+                SessionStatus::Waiting
             }
         }
     }

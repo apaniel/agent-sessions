@@ -377,7 +377,7 @@ fn test_determine_status_user_with_tool_result() {
 
 #[test]
 fn test_determine_status_unknown_type() {
-    // Unknown message type with recent file activity -> Thinking
+    // Unknown message type with recent file activity -> Processing
     let status = determine_status(
         None,
         false,
@@ -387,9 +387,21 @@ fn test_determine_status_unknown_type() {
         true, // file_recently_modified
         Some(1.0),
     );
-    assert!(matches!(status, SessionStatus::Thinking));
+    assert!(matches!(status, SessionStatus::Processing));
 
-    // Unknown message type without recent activity -> Idle
+    // Unknown message type within 30s tool window -> Processing
+    let status = determine_status(
+        None,
+        false,
+        false,
+        false,
+        false, // is_interrupted
+        false,
+        Some(15.0),
+    );
+    assert!(matches!(status, SessionStatus::Processing));
+
+    // Unknown message type, file stale (>30s) -> Waiting (not Idle, since process is running)
     let status = determine_status(
         None,
         false,
@@ -399,7 +411,7 @@ fn test_determine_status_unknown_type() {
         false,
         Some(60.0),
     );
-    assert!(matches!(status, SessionStatus::Idle));
+    assert!(matches!(status, SessionStatus::Waiting));
 }
 
 #[test]
