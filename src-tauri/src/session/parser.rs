@@ -462,16 +462,6 @@ fn find_session_for_process(
         }
     }
 
-    // Additional check: if CPU usage is high, the process is likely working
-    // Override Waiting status if CPU > 5%
-    if matches!(session.status, SessionStatus::Waiting) && process.cpu_usage > 5.0 {
-        debug!(
-            "Process has high CPU ({:.1}%), overriding Waiting -> Processing",
-            process.cpu_usage
-        );
-        session.status = SessionStatus::Processing;
-    }
-
     Some(session)
 }
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.1.21] - 2026-02-05
+
+### Fixed
+- Remove CPU-based status override that falsely showed finished sessions as "processing"
+
 ## [0.1.20] - 2026-02-05
 
 ### Fixed
