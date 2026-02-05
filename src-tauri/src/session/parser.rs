@@ -593,7 +593,7 @@ pub fn parse_session_file(
 
     let session_id = session_id?;
 
-    // Determine status based on message type, content, and file activity
+    // Determine status based on message content — no file age or CPU heuristics
     let status = determine_status(
         last_msg_type.as_deref(),
         last_has_tool_use,
@@ -601,7 +601,6 @@ pub fn parse_session_file(
         last_is_local_command,
         last_is_interrupted,
         file_recently_modified,
-        file_age_secs,
     );
 
     debug!(

@@ -3,8 +3,9 @@
 ## [0.1.23] - 2026-02-06
 
 ### Fixed
+- Simplify status detection to use message content as primary signal instead of file age heuristics
 - Increase JSONL lookback from 100 to 500 lines to handle long tool execution progress streaks
-- Never show "idle" for sessions with active processes (use "waiting" as minimum status)
+- Never show "idle" for sessions with active processes
 
 ## [0.1.22] - 2026-02-06
 

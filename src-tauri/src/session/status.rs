@@ -94,76 +94,47 @@ pub fn status_sort_priority(status: &SessionStatus) -> u8 {
 
 /// Determine session status based on the last message in the conversation
 ///
-/// Status determination logic:
-/// - If file is being actively modified (within last 3s) -> active state (Thinking or Processing)
-/// - If last message is from assistant with tool_use AND file active (within 30s) -> Processing
-///   (tools can take seconds to minutes; progress entries are written sporadically)
-/// - If last message is from assistant with tool_use AND file stale (>30s) -> Waiting (stuck)
-/// - If last message is from assistant with only text -> Waiting (Claude finished, waiting for user)
-/// - If last message is from user -> Thinking (Claude is generating a response)
-/// - If last message is a local slash command (/clear, /help, etc.) -> Waiting (these don't trigger Claude)
-/// - If last message indicates interrupted request -> Waiting (user pressed Escape)
+/// Status is determined purely from the message content — no file age or CPU heuristics.
+/// The last message reliably indicates what the session is doing:
+/// - assistant with tool_use -> Processing (tool is executing, could take minutes)
+/// - assistant text-only -> Waiting (Claude finished, waiting for user input)
+/// - user message -> Thinking (Claude is generating a response)
+/// - user with tool_result -> Thinking (Claude is processing tool output)
+/// - local slash command or interrupted -> Waiting (no Claude response expected)
 pub fn determine_status(
     last_msg_type: Option<&str>,
     has_tool_use: bool,
-    has_tool_result: bool,
+    _has_tool_result: bool,
     is_local_command: bool,
     is_interrupted: bool,
     file_recently_modified: bool,
-    file_age_secs: Option<f32>,
 ) -> SessionStatus {
-    // Tool execution uses a longer activity window (30s) because:
-    // - Tools can take seconds or minutes to complete
-    // - Progress entries are written sporadically (every 6-10s)
-    // - The 3-second threshold misses ongoing tool execution
-    let file_active_for_tool = file_age_secs.map(|age| age < 30.0).unwrap_or(false);
-
     match last_msg_type {
         Some("assistant") => {
             if has_tool_use {
-                if file_recently_modified || file_active_for_tool {
-                    // Tool is executing - file has been updated within the tool activity window
-                    SessionStatus::Processing
-                } else {
-                    // Tool_use sent but no file activity for >30s - session is stuck/waiting
-                    SessionStatus::Waiting
-                }
+                // Tool is executing - could take seconds or minutes
+                SessionStatus::Processing
             } else if file_recently_modified {
-                // Assistant sent text but file was just modified - Claude might still be
-                // streaming or about to send another message. Treat as active.
+                // Text response but file is still being written to
+                // (streaming, compacting, or about to send tool_use)
                 SessionStatus::Processing
             } else {
-                // Assistant sent a text response and file hasn't been modified recently
-                // Claude is done and waiting for user input
+                // Assistant sent a text response and file is quiet - waiting for user
                 SessionStatus::Waiting
             }
         }
         Some("user") => {
             if is_local_command || is_interrupted {
-                // Local slash commands like /clear, /help, /compact don't trigger Claude
-                // Interrupted requests (user pressed Escape) also mean session is waiting
+                // Local slash commands and interrupted requests don't trigger Claude
                 SessionStatus::Waiting
-            } else if has_tool_result {
-                // User message contains tool_result - tool execution complete
-                if file_recently_modified || file_active_for_tool {
-                    // Claude is actively processing the result
-                    SessionStatus::Thinking
-                } else {
-                    // Tool result was sent but no activity since - session is stuck
-                    SessionStatus::Waiting
-                }
-            } else if file_recently_modified {
-                // Regular user input, Claude is actively thinking/generating
-                SessionStatus::Thinking
             } else {
-                // User input but no activity - Claude might be stuck or waiting
-                SessionStatus::Waiting
+                // User sent a message or tool result - Claude is working
+                SessionStatus::Thinking
             }
         }
         _ => {
-            // No recognized message type (e.g., only progress entries in lookback window)
-            // Since this is called for sessions with active processes, never return Idle
-            if file_recently_modified || file_active_for_tool {
+            // Couldn't determine message type (e.g., only progress entries in lookback)
+            if file_recently_modified {
                 SessionStatus::Processing
             } else {
                 SessionStatus::Waiting
