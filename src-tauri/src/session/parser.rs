@@ -273,9 +273,10 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
             debug!("Found {} JSONL files for project {}", jsonl_files.len(), project_path);
 
             // Match processes to JSONL files
+            let assigned_count = matching_processes.len();
             for (index, process) in matching_processes.iter().enumerate() {
                 debug!("Matching process pid={} to JSONL file index {}", process.pid, index);
-                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, index, agent_type.clone()) {
+                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, index, agent_type.clone(), assigned_count) {
                     // Track status transitions
                     let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
                     let prev_status = prev_status_map.get(&session.id).cloned();
@@ -402,7 +403,7 @@ fn get_recently_active_jsonl_files(project_dir: &PathBuf, _expected_count: usize
 }
 
 /// Find a session for a specific process from available JSONL files
-/// Checks all recent files and uses the most "active" status found
+/// Checks unassigned recent files and uses the most "active" status found
 fn find_session_for_process(
     jsonl_files: &[PathBuf],
     project_dir: &PathBuf,
@@ -410,6 +411,7 @@ fn find_session_for_process(
     process: &AgentProcess,
     index: usize,
     agent_type: AgentType,
+    assigned_count: usize,
 ) -> Option<Session> {
     use std::time::{Duration, SystemTime};
 
@@ -422,13 +424,19 @@ fn find_session_for_process(
     // Count active subagents for this session
     session.active_subagent_count = count_active_subagents(project_dir, &session.id);
 
-    // Check if any other recent files show more active status
-    // This handles subagent scenarios where main session file stops updating
+    // Check if any unassigned recent files show more active status
+    // Only check files NOT already assigned to another process (index >= assigned_count)
+    // Files at indices 0..assigned_count are each assigned to a specific process
     let now = SystemTime::now();
     let active_threshold = Duration::from_secs(10); // Check files modified in last 10 seconds
 
-    for jsonl_path in jsonl_files {
+    for (file_idx, jsonl_path) in jsonl_files.iter().enumerate() {
         if jsonl_path == primary_jsonl {
+            continue;
+        }
+
+        // Skip files assigned to other processes to prevent cross-contamination
+        if file_idx < assigned_count {
             continue;
         }
 
