@@ -1,7 +1,7 @@
 use crate::session::{
     AgentType, SessionStatus, parse_session_file, convert_dir_name_to_path, convert_path_to_dir_name,
     determine_status, status_sort_priority, has_tool_use, has_tool_result, is_local_slash_command,
-    is_interrupted_request, cleanup_stale_status_entries, get_sessions_internal
+    is_interrupted_request, is_thinking_only, cleanup_stale_status_entries, get_sessions_internal
 };
 use crate::agent::AgentProcess;
 use serde_json::json;
@@ -211,6 +211,19 @@ fn test_is_local_slash_command() {
     ]);
     assert!(!is_local_slash_command(&array_non_local));
 
+    // Test XML-wrapped command format (how Claude Code actually writes commands to JSONL)
+    assert!(is_local_slash_command(&json!("<command-name>/clear</command-name>\n            <command-message>clear</command-message>\n            <command-args></command-args>")));
+    assert!(is_local_slash_command(&json!("<command-name>/compact</command-name>\n            <command-message>compact</command-message>\n            <command-args></command-args>")));
+    assert!(is_local_slash_command(&json!("<command-name>/model</command-name>\n            <command-message>model</command-message>\n            <command-args>sonnet</command-args>")));
+
+    // Test XML-wrapped non-local command (should NOT be local)
+    assert!(!is_local_slash_command(&json!("<command-name>/fix</command-name>\n            <command-message>fix</command-message>\n            <command-args></command-args>")));
+
+    // Test local-command-stdout and local-command-caveat messages
+    assert!(is_local_slash_command(&json!("<local-command-stdout></local-command-stdout>")));
+    assert!(is_local_slash_command(&json!("<local-command-stdout>some output</local-command-stdout>")));
+    assert!(is_local_slash_command(&json!("<local-command-caveat>Caveat: messages below...</local-command-caveat>")));
+
     // Test empty and edge cases
     assert!(!is_local_slash_command(&json!("")));
     assert!(!is_local_slash_command(&json!(null)));
@@ -219,64 +232,69 @@ fn test_is_local_slash_command() {
 
 #[test]
 fn test_determine_status_assistant_with_tool_use() {
-    // Assistant message with tool_use -> always Processing (tool could run for minutes)
+    // Assistant message with tool_use, file stale, no CPU -> Waiting (blocked on user)
     let status = determine_status(
         Some("assistant"),
         true,  // has_tool_use
         false, // has_tool_result
         false, // is_local_command
         false, // is_interrupted
-        false, // file_recently_modified
+        Some(10.0), // file_age_secs (stale)
+        0.0,   // cpu_usage
     );
-    assert!(matches!(status, SessionStatus::Processing));
+    assert!(matches!(status, SessionStatus::Waiting));
 
-    // Same with recent file activity
+    // Same with recent file activity -> Processing
     let status = determine_status(
         Some("assistant"),
         true,
         false,
         false,
         false,
-        true,
+        Some(1.0), // file recently modified
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Processing));
 }
 
 #[test]
 fn test_determine_status_assistant_text_only() {
-    // Assistant message with only text -> always Waiting (Claude finished)
+    // Assistant message with only text, file stale -> Idle (Claude finished)
     let status = determine_status(
         Some("assistant"),
         false, // no tool_use
         false,
         false,
         false,
-        false,
+        Some(10.0),
+        0.0,
     );
-    assert!(matches!(status, SessionStatus::Waiting));
+    assert!(matches!(status, SessionStatus::Idle));
 
-    // With recent file activity, text-only assistant = Processing (still streaming/compacting)
+    // With recent file activity, text-only assistant = Processing (still streaming)
     let status = determine_status(
         Some("assistant"),
         false,
         false,
         false,
         false,
-        true,
+        Some(1.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Processing));
 }
 
 #[test]
 fn test_determine_status_user_message() {
-    // Regular user message -> always Thinking (Claude is working)
+    // Regular user message -> Thinking (Claude is working)
     let status = determine_status(
         Some("user"),
         false,
         false,
         false, // not a local command
         false, // is_interrupted
-        false,
+        Some(10.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
@@ -287,43 +305,47 @@ fn test_determine_status_user_message() {
         false,
         false,
         false,
-        true,
+        Some(1.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
-    // User message that's a local command -> Waiting
+    // User message that's a local command -> Idle
     let status = determine_status(
         Some("user"),
         false,
         false,
         true, // is_local_command
         false,
-        false,
+        Some(10.0),
+        0.0,
     );
-    assert!(matches!(status, SessionStatus::Waiting));
+    assert!(matches!(status, SessionStatus::Idle));
 
-    // User message that's an interrupted request -> Waiting
+    // User message that's an interrupted request -> Idle
     let status = determine_status(
         Some("user"),
         false,
         false,
         false,
         true, // is_interrupted
-        false,
+        Some(10.0),
+        0.0,
     );
-    assert!(matches!(status, SessionStatus::Waiting));
+    assert!(matches!(status, SessionStatus::Idle));
 }
 
 #[test]
 fn test_determine_status_user_with_tool_result() {
-    // User message with tool_result -> always Thinking (Claude processing result)
+    // User message with tool_result -> Thinking (Claude processing result)
     let status = determine_status(
         Some("user"),
         false,
         true,  // has_tool_result
         false,
         false,
-        false,
+        Some(10.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Thinking));
 
@@ -334,7 +356,8 @@ fn test_determine_status_user_with_tool_result() {
         true,
         false,
         false,
-        true,
+        Some(1.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Thinking));
 }
@@ -348,20 +371,22 @@ fn test_determine_status_unknown_type() {
         false,
         false,
         false,
-        true,
+        Some(1.0),
+        0.0,
     );
     assert!(matches!(status, SessionStatus::Processing));
 
-    // Unknown message type, file stale -> Waiting
+    // Unknown message type, file stale -> Idle
     let status = determine_status(
         None,
         false,
         false,
         false,
         false,
-        false,
+        Some(10.0),
+        0.0,
     );
-    assert!(matches!(status, SessionStatus::Waiting));
+    assert!(matches!(status, SessionStatus::Idle));
 }
 
 #[test]
@@ -429,9 +454,9 @@ fn test_session_status_serialization() {
 // Integration tests for JSONL parsing
 
 #[test]
-fn test_parse_jsonl_assistant_text_only_is_waiting() {
+fn test_parse_jsonl_assistant_text_only_is_idle() {
     // Scenario: Claude responded with text only (no tool_use), file not recently modified
-    // Expected: Waiting
+    // Expected: Idle (Claude finished, no pending questions)
     let jsonl = create_test_jsonl_old(&[
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"Hello Claude"},"timestamp":"2024-01-01T00:00:00Z"}"#,
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Hello! How can I help you today?"}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
@@ -441,8 +466,8 @@ fn test_parse_jsonl_assistant_text_only_is_waiting() {
 
     assert!(session.is_some());
     let session = session.unwrap();
-    assert!(matches!(session.status, SessionStatus::Waiting),
-        "Expected Waiting when last message is assistant text-only, got {:?}", session.status);
+    assert!(matches!(session.status, SessionStatus::Idle),
+        "Expected Idle when last message is assistant text-only, got {:?}", session.status);
 }
 
 #[test]
@@ -500,9 +525,9 @@ fn test_parse_jsonl_user_tool_result_is_thinking() {
 }
 
 #[test]
-fn test_parse_jsonl_local_command_is_waiting() {
+fn test_parse_jsonl_local_command_is_idle() {
     // Scenario: User typed /clear or other local command
-    // Expected: Waiting (local commands don't trigger Claude)
+    // Expected: Idle (local commands don't trigger Claude)
     let jsonl = create_test_jsonl(&[
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Done!"}]},"timestamp":"2024-01-01T00:00:00Z"}"#,
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"/clear"},"timestamp":"2024-01-01T00:00:01Z"}"#,
@@ -512,15 +537,15 @@ fn test_parse_jsonl_local_command_is_waiting() {
 
     assert!(session.is_some());
     let session = session.unwrap();
-    assert!(matches!(session.status, SessionStatus::Waiting),
-        "Expected Waiting when last message is local command, got {:?}", session.status);
+    assert!(matches!(session.status, SessionStatus::Idle),
+        "Expected Idle when last message is local command, got {:?}", session.status);
 }
 
 #[test]
 fn test_parse_jsonl_complex_conversation_flow() {
     // Scenario: Complex conversation - user asks, Claude responds with tool, tool runs, Claude responds with text
     // File is old (not recently modified)
-    // Expected: Waiting (Claude finished with text response)
+    // Expected: Idle (Claude finished with text response, file is old)
     let jsonl = create_test_jsonl_old(&[
         r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"What files are in this directory?"},"timestamp":"2024-01-01T00:00:00Z"}"#,
         r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"tool1","name":"Bash","input":{"command":"ls -la"}}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
@@ -532,8 +557,8 @@ fn test_parse_jsonl_complex_conversation_flow() {
 
     assert!(session.is_some());
     let session = session.unwrap();
-    assert!(matches!(session.status, SessionStatus::Waiting),
-        "Expected Waiting after Claude responds with text, got {:?}", session.status);
+    assert!(matches!(session.status, SessionStatus::Idle),
+        "Expected Idle after Claude responds with text, got {:?}", session.status);
 }
 
 #[test]
@@ -568,8 +593,8 @@ fn test_parse_jsonl_empty_content_skipped() {
     assert!(session.is_some());
     let session = session.unwrap();
     // The parser reads from the end, so it should find the last non-empty message
-    assert!(matches!(session.status, SessionStatus::Waiting),
-        "Expected Waiting after finding text-only assistant message, got {:?}", session.status);
+    assert!(matches!(session.status, SessionStatus::Idle),
+        "Expected Idle after finding text-only assistant message (file is old), got {:?}", session.status);
 }
 
 // Tests for PREVIOUS_STATUS cleanup
@@ -626,6 +651,7 @@ fn test_get_sessions_internal_process_without_cwd_is_skipped() {
         pid: 99999,
         cpu_usage: 0.0,
         cwd: None,
+        start_time: 0,
     }];
     let sessions = get_sessions_internal(&processes, AgentType::Claude);
     assert!(sessions.is_empty(), "Process without CWD should be skipped");
@@ -637,7 +663,88 @@ fn test_get_sessions_internal_process_with_nonexistent_project_is_skipped() {
         pid: 99999,
         cpu_usage: 0.0,
         cwd: Some(std::path::PathBuf::from("/nonexistent/path/that/does/not/match/any/project")),
+        start_time: 0,
     }];
     let sessions = get_sessions_internal(&processes, AgentType::Claude);
     assert!(sessions.is_empty(), "Process with non-matching CWD should produce no sessions");
+}
+
+// Tests for is_thinking_only and thinking status detection
+
+#[test]
+fn test_is_thinking_only() {
+    // Array with only thinking blocks
+    let thinking_only = json!([
+        {"type": "thinking", "thinking": "Let me think about this..."}
+    ]);
+    assert!(is_thinking_only(&thinking_only));
+
+    // Multiple thinking blocks
+    let multi_thinking = json!([
+        {"type": "thinking", "thinking": "First thought"},
+        {"type": "thinking", "thinking": "Second thought"}
+    ]);
+    assert!(is_thinking_only(&multi_thinking));
+
+    // Mixed thinking + text -> NOT thinking only
+    let mixed = json!([
+        {"type": "thinking", "thinking": "Let me think..."},
+        {"type": "text", "text": "Here's my answer"}
+    ]);
+    assert!(!is_thinking_only(&mixed));
+
+    // Text only -> NOT thinking only
+    let text_only = json!([
+        {"type": "text", "text": "Hello"}
+    ]);
+    assert!(!is_thinking_only(&text_only));
+
+    // Tool use -> NOT thinking only
+    let tool_use = json!([
+        {"type": "tool_use", "id": "123", "name": "Bash"}
+    ]);
+    assert!(!is_thinking_only(&tool_use));
+
+    // Empty array -> NOT thinking only
+    assert!(!is_thinking_only(&json!([])));
+
+    // String content -> NOT thinking only
+    assert!(!is_thinking_only(&json!("just a string")));
+}
+
+#[test]
+fn test_parse_jsonl_thinking_blocks_show_thinking_status() {
+    // Scenario: User sent a message, Claude is in extended thinking phase.
+    // The JSONL has the user message, then an assistant message with only thinking blocks.
+    // Expected: Thinking (the thinking-only assistant message should be skipped,
+    //           falling back to the user message which triggers Thinking status)
+    let jsonl = create_test_jsonl(&[
+        r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"Explain quantum computing"},"timestamp":"2024-01-01T00:00:00Z"}"#,
+        r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think about quantum computing..."}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
+    ]);
+
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
+
+    assert!(session.is_some());
+    let session = session.unwrap();
+    assert!(matches!(session.status, SessionStatus::Thinking),
+        "Expected Thinking when last content is thinking-only blocks, got {:?}", session.status);
+}
+
+#[test]
+fn test_parse_jsonl_thinking_then_text_is_not_thinking() {
+    // Scenario: Claude finished thinking and produced a text response.
+    // Expected: NOT Thinking (the text response is the real status indicator)
+    let jsonl = create_test_jsonl_old(&[
+        r#"{"sessionId":"test-session","type":"user","message":{"role":"user","content":"Hello"},"timestamp":"2024-01-01T00:00:00Z"}"#,
+        r#"{"sessionId":"test-session","type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"Let me think..."},{"type":"text","text":"Here is my response"}]},"timestamp":"2024-01-01T00:00:01Z"}"#,
+    ]);
+
+    let session = parse_session_file(&jsonl.path().to_path_buf(), "/Users/test/Projects/test-project", TEST_PID, TEST_CPU_USAGE, AgentType::Claude);
+
+    assert!(session.is_some());
+    let session = session.unwrap();
+    // Mixed thinking+text is NOT thinking-only, so it's treated as a normal assistant message
+    assert!(!matches!(session.status, SessionStatus::Thinking),
+        "Expected non-Thinking when assistant has thinking+text, got {:?}", session.status);
 }

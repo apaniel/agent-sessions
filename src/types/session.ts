@@ -2,6 +2,17 @@ export type SessionStatus = 'waiting' | 'processing' | 'thinking' | 'compacting'
 
 export type AgentType = 'claude' | 'opencode';
 
+export type TerminalApp = 'iterm2' | 'warp' | 'cursor' | 'vscode' | 'terminal' | 'tmux' | 'unknown';
+
+export type CiStatus = 'success' | 'failure' | 'pending' | 'unknown';
+
+export interface PrInfo {
+  url: string;
+  number: number;
+  state: string;
+  ciStatus: CiStatus | null;
+}
+
 export interface Session {
   id: string;
   agentType: AgentType;
@@ -16,6 +27,13 @@ export interface Session {
   pid: number;
   cpuUsage: number;
   activeSubagentCount: number;
+  terminalApp: TerminalApp;
+  isWorktree: boolean;
+  repoName: string | null;
+  prInfo: PrInfo | null;
+  commitsAhead: number | null;
+  commitsBehind: number | null;
+  contextWindowPercent: number | null;
 }
 
 export interface SessionsResponse {

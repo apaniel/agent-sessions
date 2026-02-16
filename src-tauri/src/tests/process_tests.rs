@@ -9,6 +9,7 @@ fn test_claude_process_creation() {
         cwd: Some(PathBuf::from("/Users/test/Projects/my-project")),
         cpu_usage: 5.5,
         memory: 1024,
+        start_time: 0,
     };
 
     assert_eq!(process.pid, 12345);
@@ -27,6 +28,7 @@ fn test_claude_process_without_cwd() {
         cwd: None,
         cpu_usage: 0.0,
         memory: 0,
+        start_time: 0,
     };
 
     assert_eq!(process.pid, 99999);
@@ -40,6 +42,7 @@ fn test_claude_process_clone() {
         cwd: Some(PathBuf::from("/test/path")),
         cpu_usage: 10.0,
         memory: 2048,
+        start_time: 0,
     };
 
     let cloned = process.clone();
@@ -56,6 +59,7 @@ fn test_claude_process_serialization() {
         cwd: Some(PathBuf::from("/test/path")),
         cpu_usage: 5.5,
         memory: 1024,
+        start_time: 0,
     };
 
     let json = serde_json::to_string(&process).unwrap();

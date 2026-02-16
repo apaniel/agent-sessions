@@ -3,13 +3,14 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
-use std::process::Command;
 use std::sync::Mutex;
 use once_cell::sync::Lazy;
 
 use crate::agent::AgentProcess;
-use super::model::{AgentType, Session, SessionStatus, SessionsResponse, JsonlMessage};
-use super::status::{determine_status, has_tool_use, has_tool_result, is_local_slash_command, is_interrupted_request, status_sort_priority};
+use crate::terminal::detect_terminal_for_pid;
+use super::model::{AgentType, Session, SessionStatus, SessionsResponse, JsonlMessage, TerminalApp};
+use super::git;
+use super::status::{determine_status, has_tool_use, has_tool_result, is_local_slash_command, is_interrupted_request, is_thinking_only, status_sort_priority};
 
 /// Track previous status for each session to detect transitions
 static PREVIOUS_STATUS: Lazy<Mutex<HashMap<String, SessionStatus>>> = Lazy::new(|| Mutex::new(HashMap::new()));
@@ -43,42 +44,6 @@ fn get_content_preview(content: &serde_json::Value) -> String {
     }
 }
 
-/// Get GitHub URL from a project's git remote origin
-fn get_github_url(project_path: &str) -> Option<String> {
-    let output = Command::new("git")
-        .args(["remote", "get-url", "origin"])
-        .current_dir(project_path)
-        .output()
-        .ok()?;
-
-    if !output.status.success() {
-        return None;
-    }
-
-    let remote_url = String::from_utf8_lossy(&output.stdout).trim().to_string();
-
-    // Convert SSH format to HTTPS
-    // git@github.com:user/repo.git -> https://github.com/user/repo
-    if remote_url.starts_with("git@github.com:") {
-        let path = remote_url
-            .strip_prefix("git@github.com:")?
-            .strip_suffix(".git")
-            .unwrap_or(&remote_url[15..]);
-        return Some(format!("https://github.com/{}", path));
-    }
-
-    // Already HTTPS format
-    // https://github.com/user/repo.git -> https://github.com/user/repo
-    if remote_url.starts_with("https://github.com/") {
-        let url = remote_url
-            .strip_suffix(".git")
-            .unwrap_or(&remote_url);
-        return Some(url.to_string());
-    }
-
-    None
-}
-
 /// Convert a file system path like "/Users/ozan/Projects/my-project" to a directory name
 /// This is the reverse of convert_dir_name_to_path
 /// e.g., "/Users/ozan/Projects/my-project/.rsworktree/branch-name" -> "-Users-ozan-Projects-my-project--rsworktree-branch-name"
@@ -109,84 +74,77 @@ pub fn convert_path_to_dir_name(path: &str) -> String {
     result
 }
 
-/// Convert a directory name like "-Users-ozan-Projects-ai-image-dashboard" back to a path
-/// The challenge is that both path separators AND project names can contain dashes
-/// We handle this by recognizing that the path structure is predictable:
-/// /Users/<username>/Projects/<project-name> or /Users/<username>/.../<project-name>
+/// Convert a directory name like "-Users-ozan-Repos-cleanernative-reskin-2" back to a path.
+///
+/// The challenge is that both path separators AND directory names can contain dashes.
+/// We resolve this by walking the parts left-to-right and checking the filesystem:
+/// if `/path/so/far/next_part` exists as a directory, treat the dash as a path separator;
+/// otherwise, join the remaining parts with dashes as the leaf directory name.
 ///
 /// Special case: Double dashes (--) indicate a hidden folder (starting with .)
-/// followed by subfolders separated by single dashes
-/// e.g., "ai-image-dashboard--rsworktree-analytics" becomes "ai-image-dashboard/.rsworktree/analytics"
+/// e.g., "project--rsworktree-branch" becomes "project/.rsworktree/branch"
 pub fn convert_dir_name_to_path(dir_name: &str) -> String {
     // Remove leading dash if present
     let name = dir_name.strip_prefix('-').unwrap_or(dir_name);
 
-    // Split by dash
-    let parts: Vec<&str> = name.split('-').collect();
+    // First handle double-dash (hidden folder) segments by splitting on "--"
+    let segments: Vec<&str> = name.split("--").collect();
+
+    // Process the first segment (before any hidden folder) with filesystem probing
+    let first_segment = segments[0];
+    let base_path = resolve_segment_with_fs(first_segment);
+
+    if segments.len() == 1 {
+        return base_path;
+    }
+
+    // Handle hidden folder segments: each "--" introduces a dot-prefixed folder
+    // and subsequent dashes within that segment are subfolder separators
+    let mut path = base_path;
+    for hidden_segment in &segments[1..] {
+        let sub_parts: Vec<&str> = hidden_segment.split('-').collect();
+        if let Some((first, rest)) = sub_parts.split_first() {
+            path.push_str(&format!("/.{}", first));
+            for part in rest {
+                path.push('/');
+                path.push_str(part);
+            }
+        }
+    }
+
+    path
+}
+
+/// Resolve a dash-separated segment into a filesystem path by probing which
+/// prefixes exist as directories. Once a prefix doesn't exist, the remaining
+/// parts are joined with dashes as the leaf name.
+fn resolve_segment_with_fs(segment: &str) -> String {
+    let parts: Vec<&str> = segment.split('-').collect();
 
     if parts.is_empty() {
         return String::new();
     }
 
-    // Find "Projects" or "UnityProjects" index - everything after that is the project name
-    let projects_idx = parts.iter().position(|&p| p == "Projects" || p == "UnityProjects");
+    // Walk left-to-right, checking if each prefix exists as a directory
+    let mut confirmed_path = format!("/{}", parts[0]);
+    let mut last_valid_idx = 0;
 
-    if let Some(idx) = projects_idx {
-        // Path components are before and including "Projects"
-        let path_parts = &parts[..=idx];
-        // Project name is everything after "Projects"
-        let project_parts = &parts[idx + 1..];
-
-        let mut path = String::from("/");
-        path.push_str(&path_parts.join("/"));
-
-        if !project_parts.is_empty() {
-            path.push('/');
-            // Handle the project path with potential hidden folders
-            // Double dash (empty string between dashes when split) indicates hidden folder
-            // After a hidden folder marker, subsequent parts are subfolders
-            let mut in_hidden_folder = false;
-            let mut segments: Vec<String> = Vec::new();
-            let mut current_segment = String::new();
-
-            for part in project_parts {
-                if part.is_empty() {
-                    // Empty part means we hit a double dash - start hidden folder
-                    if !current_segment.is_empty() {
-                        segments.push(current_segment);
-                        current_segment = String::new();
-                    }
-                    in_hidden_folder = true;
-                } else if in_hidden_folder {
-                    // After double dash, each part is a subfolder
-                    // First part after -- gets the dot prefix
-                    if current_segment.is_empty() {
-                        current_segment = format!(".{}", part);
-                    } else {
-                        segments.push(current_segment);
-                        current_segment = part.to_string();
-                    }
-                } else {
-                    // Normal project name part - join with dashes
-                    if current_segment.is_empty() {
-                        current_segment = part.to_string();
-                    } else {
-                        current_segment.push('-');
-                        current_segment.push_str(part);
-                    }
-                }
-            }
-            if !current_segment.is_empty() {
-                segments.push(current_segment);
-            }
-
-            path.push_str(&segments.join("/"));
+    for i in 1..parts.len() {
+        let candidate = format!("{}/{}", confirmed_path, parts[i]);
+        if std::path::Path::new(&candidate).is_dir() {
+            confirmed_path = candidate;
+            last_valid_idx = i;
+        } else {
+            break;
         }
+    }
 
-        path
+    // Everything after last_valid_idx is the leaf directory name (joined with dashes)
+    if last_valid_idx < parts.len() - 1 {
+        let leaf = parts[last_valid_idx + 1..].join("-");
+        format!("{}/{}", confirmed_path, leaf)
     } else {
-        // Fallback: just replace dashes with slashes (old behavior)
-        format!("/{}", name.replace('-', "/"))
+        confirmed_path
     }
 }
 
@@ -240,7 +198,7 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
                 .and_then(|n| n.to_str())
                 .unwrap_or("");
 
-            let project_path = convert_dir_name_to_path(dir_name);
+            let mut project_path = convert_dir_name_to_path(dir_name);
             debug!("Checking project: {} -> {}", dir_name, project_path);
 
             // Check if this project has active processes
@@ -258,6 +216,9 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
                 match matching_cwd {
                     Some(cwd) => {
                         debug!("Project {} matched via reverse lookup to cwd {}", dir_name, cwd);
+                        // Use the actual cwd as project_path since the decoded path may be wrong
+                        // (e.g. "homeaglowpub-cp-reskin" decoded as "homeaglowpub/cp-reskin")
+                        project_path = cwd.clone();
                         cwd_to_processes.get(cwd).unwrap()
                     }
                     None => {
@@ -273,10 +234,43 @@ pub fn get_sessions_internal(processes: &[AgentProcess], agent_type: AgentType) 
             debug!("Found {} JSONL files for project {}", jsonl_files.len(), project_path);
 
             // Match processes to JSONL files
+            // Use lsof to correctly match PIDs to their session files when multiple
+            // processes share the same project directory (prevents status cross-contamination)
+            let pid_to_jsonl = if matching_processes.len() > 1 {
+                match_processes_to_files_by_time(matching_processes, &jsonl_files)
+            } else {
+                HashMap::new()
+            };
+
             let assigned_count = matching_processes.len();
-            for (index, process) in matching_processes.iter().enumerate() {
-                debug!("Matching process pid={} to JSONL file index {}", process.pid, index);
-                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, index, agent_type.clone(), assigned_count) {
+            let mut used_indices: std::collections::HashSet<usize> = std::collections::HashSet::new();
+            for process in matching_processes.iter() {
+                // Try lsof-based matching first, fall back to first unassigned index
+                let file_index = if let Some(matched_path) = pid_to_jsonl.get(&process.pid) {
+                    let idx = jsonl_files.iter().position(|f| f == matched_path);
+                    if let Some(i) = idx {
+                        debug!("PID {} matched to JSONL file index {} via lsof", process.pid, i);
+                    }
+                    idx
+                } else {
+                    None
+                };
+
+                let file_index = match file_index {
+                    Some(i) => i,
+                    None => {
+                        let fallback = (0..jsonl_files.len())
+                            .find(|i| !used_indices.contains(i))
+                            .unwrap_or(0);
+                        debug!("PID {} falling back to JSONL file index {}", process.pid, fallback);
+                        fallback
+                    }
+                };
+
+                used_indices.insert(file_index);
+
+                debug!("Matching process pid={} to JSONL file index {}", process.pid, file_index);
+                if let Some(session) = find_session_for_process(&jsonl_files, &path, &project_path, process, file_index, agent_type.clone(), assigned_count) {
                     // Track status transitions
                     let mut prev_status_map = PREVIOUS_STATUS.lock().unwrap();
                     let prev_status = prev_status_map.get(&session.id).cloned();
@@ -323,30 +317,21 @@ fn is_subagent_file(path: &PathBuf) -> bool {
         .unwrap_or(false)
 }
 
-/// Extract sessionId from a subagent JSONL file by reading the first few lines
-fn get_subagent_session_id(path: &PathBuf) -> Option<String> {
-    let file = File::open(path).ok()?;
-    let reader = BufReader::new(file);
-
-    // Check first 5 lines for sessionId
-    for line in reader.lines().take(5).flatten() {
-        if let Ok(msg) = serde_json::from_str::<JsonlMessage>(&line) {
-            if let Some(session_id) = msg.session_id {
-                return Some(session_id);
-            }
-        }
-    }
-    None
-}
-
-/// Count active subagents for a given parent session
+/// Count active subagents for a given parent session.
+/// Subagent files live in <project_dir>/<session_id>/subagents/agent-*.jsonl
 fn count_active_subagents(project_dir: &PathBuf, parent_session_id: &str) -> usize {
     use std::time::{Duration, SystemTime};
+
+    let subagents_dir = project_dir.join(parent_session_id).join("subagents");
+    if !subagents_dir.exists() {
+        trace!("No subagents directory for session {}", parent_session_id);
+        return 0;
+    }
 
     let active_threshold = Duration::from_secs(30);
     let now = SystemTime::now();
 
-    let count = fs::read_dir(project_dir)
+    let count = fs::read_dir(&subagents_dir)
         .into_iter()
         .flatten()
         .flatten()
@@ -360,15 +345,9 @@ fn count_active_subagents(project_dir: &PathBuf, parent_session_id: &str) -> usi
                 .map(|d| d < active_threshold)
                 .unwrap_or(false)
         })
-        .filter(|e| {
-            // Check if sessionId matches parent
-            get_subagent_session_id(&e.path())
-                .map(|id| id == parent_session_id)
-                .unwrap_or(false)
-        })
         .count();
 
-    trace!("Found {} active subagents for session {}", count, parent_session_id);
+    trace!("Found {} active subagents for session {} in {:?}", count, parent_session_id, subagents_dir);
     count
 }
 
@@ -402,6 +381,105 @@ fn get_recently_active_jsonl_files(project_dir: &PathBuf, _expected_count: usize
         .collect()
 }
 
+/// Match process PIDs to their JSONL session files by correlating process
+/// start times with file creation times. When a Claude session starts, both
+/// the process and its JSONL file are created at roughly the same time.
+/// Only needed when multiple processes share the same project directory.
+fn match_processes_to_files_by_time(
+    processes: &[&AgentProcess],
+    candidate_files: &[PathBuf],
+) -> HashMap<u32, PathBuf> {
+    use std::time::UNIX_EPOCH;
+
+    let mut result = HashMap::new();
+
+    if processes.len() < 2 || candidate_files.is_empty() {
+        return result;
+    }
+
+    // Get file creation times (birth time on macOS)
+    let file_times: Vec<(usize, u64)> = candidate_files
+        .iter()
+        .enumerate()
+        .filter_map(|(idx, path)| {
+            let created = path.metadata().ok()?.created().ok()?;
+            let secs = created.duration_since(UNIX_EPOCH).ok()?.as_secs();
+            Some((idx, secs))
+        })
+        .collect();
+
+    if file_times.is_empty() {
+        return result;
+    }
+
+    debug!(
+        "Matching {} processes to {} files by timestamp",
+        processes.len(),
+        file_times.len()
+    );
+
+    for p in processes.iter() {
+        debug!("  Process PID {} start_time={}", p.pid, p.start_time);
+    }
+    for (idx, secs) in &file_times {
+        debug!(
+            "  File [{}] {:?} created_at={}",
+            idx,
+            candidate_files[*idx].file_name().unwrap_or_default(),
+            secs
+        );
+    }
+
+    // Greedy matching: for each process, find the file with the closest
+    // creation time. Assign the closest pair first to avoid conflicts.
+    // Build all (process_idx, file_idx, distance) pairs and sort by distance.
+    let mut pairs: Vec<(usize, usize, u64)> = Vec::new();
+    for (pi, proc) in processes.iter().enumerate() {
+        for &(fi, file_time) in &file_times {
+            let distance = if proc.start_time > file_time {
+                proc.start_time - file_time
+            } else {
+                file_time - proc.start_time
+            };
+            pairs.push((pi, fi, distance));
+        }
+    }
+    pairs.sort_by_key(|&(_, _, d)| d);
+
+    let mut assigned_processes: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut assigned_files: std::collections::HashSet<usize> = std::collections::HashSet::new();
+
+    for (pi, fi, distance) in pairs {
+        if assigned_processes.contains(&pi) || assigned_files.contains(&fi) {
+            continue;
+        }
+
+        let proc = processes[pi];
+        let file_path = &candidate_files[fi];
+
+        debug!(
+            "Matched PID {} (start={}) -> {:?} (created={}), distance={}s",
+            proc.pid,
+            proc.start_time,
+            file_path.file_name().unwrap_or_default(),
+            file_times.iter().find(|(i, _)| *i == fi).map(|(_, t)| *t).unwrap_or(0),
+            distance
+        );
+
+        result.insert(proc.pid, file_path.clone());
+        assigned_processes.insert(pi);
+        assigned_files.insert(fi);
+    }
+
+    info!(
+        "PID-to-JSONL matching: {}/{} processes matched by timestamp",
+        result.len(),
+        processes.len()
+    );
+
+    result
+}
+
 /// Find a session for a specific process from available JSONL files
 /// Checks unassigned recent files and uses the most "active" status found
 fn find_session_for_process(
@@ -423,6 +501,19 @@ fn find_session_for_process(
 
     // Count active subagents for this session
     session.active_subagent_count = count_active_subagents(project_dir, &session.id);
+
+    // If there are active subagents, the session is processing (not waiting for user input).
+    // The main JSONL file goes quiet when a subagent runs (activity is in agent-*.jsonl),
+    // so status logic would otherwise think we're waiting/idle.
+    if session.active_subagent_count > 0
+        && matches!(session.status, SessionStatus::Waiting | SessionStatus::Idle)
+    {
+        debug!(
+            "Overriding {:?} -> Processing: {} active subagents for session {}",
+            session.status, session.active_subagent_count, session.id
+        );
+        session.status = SessionStatus::Processing;
+    }
 
     // Check if any unassigned recent files show more active status
     // Only check files NOT already assigned to another process (index >= assigned_count)
@@ -493,12 +584,9 @@ pub fn parse_session_file(
         .and_then(|modified| SystemTime::now().duration_since(modified).ok())
         .map(|d| d.as_secs_f32());
 
-    let file_recently_modified = file_age_secs.map(|age| age < 3.0).unwrap_or(false);
-
     debug!(
-        "File age: {:.1}s, recently_modified: {}",
+        "File age: {:.1}s",
         file_age_secs.unwrap_or(-1.0),
-        file_recently_modified
     );
 
     // Parse the JSONL file to get session info
@@ -517,6 +605,7 @@ pub fn parse_session_file(
     let mut last_is_interrupted = false;
     let mut found_status_info = false;
     let mut is_compacting = false;
+    let mut last_usage = None;
 
     // Read last N lines for efficiency
     // Must be large enough to cover long stretches of progress entries during tool execution
@@ -536,6 +625,17 @@ pub fn parse_session_file(
             }
             if last_timestamp.is_none() {
                 last_timestamp = msg.timestamp;
+            }
+            if last_usage.is_none() {
+                if let Some(ref message) = msg.message {
+                    if let Some(usage) = &message.usage {
+                        last_usage = Some(super::model::TokenUsage {
+                            input_tokens: usage.input_tokens,
+                            cache_creation_input_tokens: usage.cache_creation_input_tokens,
+                            cache_read_input_tokens: usage.cache_read_input_tokens,
+                        });
+                    }
+                }
             }
 
             // Detect compaction: if we see compact_boundary before any content message
@@ -562,7 +662,7 @@ pub fn parse_session_file(
                             _ => false,
                         };
 
-                        if has_content {
+                        if has_content && !is_thinking_only(c) {
                             last_msg_type = msg.msg_type.clone();
                             last_role = content.role.clone();
                             last_has_tool_use = has_tool_use(c);
@@ -582,7 +682,7 @@ pub fn parse_session_file(
                 }
             }
 
-            if session_id.is_some() && found_status_info {
+            if session_id.is_some() && found_status_info && last_usage.is_some() {
                 break;
             }
         }
@@ -616,7 +716,7 @@ pub fn parse_session_file(
 
     let session_id = session_id?;
 
-    // Determine status based on message content — no file age or CPU heuristics
+    // Determine status using message content + file age + CPU usage
     let status = if is_compacting {
         SessionStatus::Compacting
     } else {
@@ -626,13 +726,14 @@ pub fn parse_session_file(
             last_has_tool_result,
             last_is_local_command,
             last_is_interrupted,
-            file_recently_modified,
+            file_age_secs,
+            cpu_usage,
         )
     };
 
     debug!(
-        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, recent={}, compacting={}, file_age={:.1}s -> {:?}",
-        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, file_recently_modified, is_compacting, file_age_secs.unwrap_or(-1.0), status
+        "Status determination: type={:?}, tool_use={}, tool_result={}, local_cmd={}, interrupted={}, compacting={}, file_age={:.1}s, cpu={:.1}% -> {:?}",
+        last_msg_type, last_has_tool_use, last_has_tool_result, last_is_local_command, last_is_interrupted, is_compacting, file_age_secs.unwrap_or(-1.0), cpu_usage, status
     );
 
     // Extract project name from path
@@ -652,8 +753,44 @@ pub fn parse_session_file(
         }
     });
 
-    // Get GitHub URL from git remote
-    let github_url = get_github_url(project_path);
+    // Git enrichment (cached in git.rs)
+    let github_url = git::get_github_url(project_path);
+    let repo_name = git::get_repo_name(&github_url);
+    let is_worktree = git::is_worktree(project_path);
+
+    let (pr_info, commits_ahead, commits_behind) = if let Some(ref branch) = git_branch {
+        let pr = git::get_pr_info(project_path, branch);
+        let ab = git::get_ahead_behind(project_path, branch);
+        let (ahead, behind) = ab.map(|(a, b)| (Some(a), Some(b))).unwrap_or((None, None));
+        (pr, ahead, behind)
+    } else {
+        (None, None, None)
+    };
+
+    // Context window remaining % (how much is left before compression)
+    let context_window_percent = last_usage.and_then(|u| {
+        let input = u.input_tokens.unwrap_or(0)
+            + u.cache_creation_input_tokens.unwrap_or(0)
+            + u.cache_read_input_tokens.unwrap_or(0);
+        if input > 0 {
+            let used_pct = (input as f32 / 200_000.0) * 100.0;
+            Some((100.0 - used_pct).max(0.0))
+        } else {
+            None
+        }
+    });
+
+    let detected = detect_terminal_for_pid(pid);
+    info!("Terminal detection for pid={}: {:?}", pid, detected);
+    let terminal_app = match detected.as_str() {
+        "iterm2" => TerminalApp::Iterm2,
+        "warp" => TerminalApp::Warp,
+        "cursor" => TerminalApp::Cursor,
+        "vscode" => TerminalApp::Vscode,
+        "terminal" => TerminalApp::Terminal,
+        "tmux" => TerminalApp::Tmux,
+        _ => TerminalApp::Unknown,
+    };
 
     Some(Session {
         id: session_id,
@@ -669,5 +806,12 @@ pub fn parse_session_file(
         pid,
         cpu_usage,
         active_subagent_count: 0, // Set by find_session_for_process
+        terminal_app,
+        is_worktree,
+        repo_name,
+        pr_info,
+        commits_ahead,
+        commits_behind,
+        context_window_percent,
     })
 }

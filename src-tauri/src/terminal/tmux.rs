@@ -2,6 +2,7 @@ use std::process::Command;
 use super::applescript::execute_applescript;
 use super::iterm;
 use super::terminal_app;
+use super::warp;
 
 /// Focus a tmux pane by matching its TTY
 /// Returns Ok if the pane was found and focused, Err otherwise
@@ -76,6 +77,10 @@ fn focus_tmux_client_terminal() -> Result<(), String> {
         return Ok(());
     }
 
+    if warp::focus_warp_by_tty(tty_name).is_ok() {
+        return Ok(());
+    }
+
     if terminal_app::focus_terminal_app_by_tty(tty_name).is_ok() {
         return Ok(());
     }
@@ -91,6 +96,9 @@ fn focus_any_terminal_with_tmux() -> Result<(), String> {
         tell application "System Events"
             if exists process "iTerm2" then
                 tell application "iTerm2" to activate
+                return "found"
+            else if exists process "Warp" then
+                tell application "Warp" to activate
                 return "found"
             else if exists process "Terminal" then
                 tell application "Terminal" to activate

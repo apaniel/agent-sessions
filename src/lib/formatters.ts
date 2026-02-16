@@ -20,11 +20,11 @@ export function truncatePath(path: string): string {
 
 export const statusConfig = {
   waiting: {
-    color: 'bg-white/50',
-    fillColor: 'fill-white/50',
-    cardBg: 'bg-white/5',
-    cardBorder: 'border-white/10',
-    badgeClassName: 'border-white/20 text-white/60 bg-white/5',
+    color: 'bg-yellow-400',
+    fillColor: 'fill-yellow-400',
+    cardBg: 'bg-yellow-400/15',
+    cardBorder: 'border-yellow-400/30',
+    badgeClassName: 'border-yellow-400/40 text-yellow-300 bg-yellow-400/20',
     label: 'Waiting for input',
   },
   thinking: {

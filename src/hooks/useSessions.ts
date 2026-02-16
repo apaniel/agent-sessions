@@ -10,8 +10,9 @@ function getOrderingPriority(status: string): number {
   switch (status) {
     case 'thinking':
     case 'processing':
+    case 'compacting':
     case 'waiting':
-      return 0; // All active states - same ordering priority
+      return 0; // All active/attention states - same ordering priority
     case 'idle':
       return 1; // Only idle causes reordering
     default:
@@ -116,6 +117,7 @@ export function useSessions() {
       await invoke('focus_session', {
         pid: session.pid,
         projectPath: session.projectPath,
+        terminalApp: session.terminalApp ?? 'unknown',
       });
     } catch (err) {
       console.error('Failed to focus session:', err);

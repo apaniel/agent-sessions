@@ -1,5 +1,6 @@
 use super::{AgentDetector, AgentProcess};
-use crate::session::{AgentType, Session, SessionStatus};
+use crate::session::{AgentType, Session, SessionStatus, TerminalApp};
+use crate::terminal::detect_terminal_for_pid;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -125,6 +126,7 @@ fn find_opencode_processes() -> Vec<AgentProcess> {
                 pid: pid.as_u32(),
                 cpu_usage: cpu,
                 cwd,
+                start_time: process.start_time(),
             });
         }
     }
@@ -311,6 +313,16 @@ fn get_latest_session_for_project(
     let display_message = last_message_text
         .or_else(|| Some(session.title.clone()).filter(|t| !t.is_empty()));
 
+    let terminal_app = match detect_terminal_for_pid(process.pid).as_str() {
+        "iterm2" => TerminalApp::Iterm2,
+        "warp" => TerminalApp::Warp,
+        "cursor" => TerminalApp::Cursor,
+        "vscode" => TerminalApp::Vscode,
+        "terminal" => TerminalApp::Terminal,
+        "tmux" => TerminalApp::Tmux,
+        _ => TerminalApp::Unknown,
+    };
+
     Some(Session {
         id: session.id,
         agent_type: AgentType::OpenCode,
@@ -325,6 +337,13 @@ fn get_latest_session_for_project(
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
+        terminal_app,
+        is_worktree: false,
+        repo_name: None,
+        pr_info: None,
+        commits_ahead: None,
+        commits_behind: None,
+        context_window_percent: None,
     })
 }
 
@@ -498,6 +517,16 @@ fn get_global_session_for_directory(
     let display_message = last_message_text
         .or_else(|| Some(session.title.clone()).filter(|t| !t.is_empty()));
 
+    let terminal_app = match detect_terminal_for_pid(process.pid).as_str() {
+        "iterm2" => TerminalApp::Iterm2,
+        "warp" => TerminalApp::Warp,
+        "cursor" => TerminalApp::Cursor,
+        "vscode" => TerminalApp::Vscode,
+        "terminal" => TerminalApp::Terminal,
+        "tmux" => TerminalApp::Tmux,
+        _ => TerminalApp::Unknown,
+    };
+
     Some(Session {
         id: session.id,
         agent_type: AgentType::OpenCode,
@@ -512,5 +541,12 @@ fn get_global_session_for_directory(
         pid: process.pid,
         cpu_usage: process.cpu_usage,
         active_subagent_count: 0,
+        terminal_app,
+        is_worktree: false,
+        repo_name: None,
+        pr_info: None,
+        commits_ahead: None,
+        commits_behind: None,
+        context_window_percent: None,
     })
 }

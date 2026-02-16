@@ -11,6 +11,8 @@ pub struct ClaudeProcess {
     pub cwd: Option<PathBuf>,
     pub cpu_usage: f32,
     pub memory: u64,
+    /// Process start time in seconds since UNIX epoch
+    pub start_time: u64,
 }
 
 // Reuse System instance to avoid expensive re-initialization
@@ -185,6 +187,7 @@ pub fn find_claude_processes() -> Vec<ClaudeProcess> {
                 cwd,
                 cpu_usage: process.cpu_usage(),
                 memory: process.memory(),
+                start_time: process.start_time(),
             });
         }
     }

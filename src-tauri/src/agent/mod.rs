@@ -9,6 +9,8 @@ pub struct AgentProcess {
     pub pid: u32,
     pub cpu_usage: f32,
     pub cwd: Option<std::path::PathBuf>,
+    /// Process start time in seconds since UNIX epoch
+    pub start_time: u64,
 }
 
 /// Trait for detecting and parsing agent sessions
@@ -49,6 +51,10 @@ pub fn get_all_sessions() -> SessionsResponse {
     // Clean up stale status tracking entries for sessions that no longer exist
     let active_ids: HashSet<String> = all_sessions.iter().map(|s| s.id.clone()).collect();
     cleanup_stale_status_entries(&active_ids);
+
+    // Clean up git caches for projects no longer active
+    let active_paths: HashSet<String> = all_sessions.iter().map(|s| s.project_path.clone()).collect();
+    crate::session::git::cleanup_git_caches(&active_paths);
 
     // Sort by status priority first, then by most recent activity
     all_sessions.sort_by(|a, b| {
