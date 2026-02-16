@@ -13,6 +13,12 @@ export interface PrInfo {
   ciStatus: CiStatus | null;
 }
 
+export interface ProjectLink {
+  label: string;
+  url: string;
+  icon?: string | null;
+}
+
 export interface Session {
   id: string;
   agentType: AgentType;
@@ -34,6 +40,8 @@ export interface Session {
   commitsAhead: number | null;
   commitsBehind: number | null;
   contextWindowPercent: number | null;
+  projectLinks: ProjectLink[];
+  sessionLinks: ProjectLink[];
 }
 
 export interface SessionsResponse {

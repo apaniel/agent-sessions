@@ -3,7 +3,8 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
 use std::collections::{HashMap, HashSet};
 use std::sync::{LazyLock, Mutex};
 
-use crate::session::{get_sessions, convert_path_to_dir_name, SessionsResponse};
+use crate::session::{get_sessions, convert_path_to_dir_name, SessionsResponse, ProjectLink};
+use crate::session::config;
 use crate::terminal;
 
 // Store current shortcut for unregistration
@@ -1104,6 +1105,109 @@ pub fn kill_session(pid: u32) -> Result<(), String> {
         let stderr = String::from_utf8_lossy(&output.stderr);
         Err(format!("Failed to kill process {}: {}", pid, stderr))
     }
+}
+
+/// Save project links to `.agent-sessions.json`
+#[tauri::command]
+pub fn save_project_links(project_path: String, links: Vec<ProjectLink>) -> Result<(), String> {
+    config::set_project_links(&project_path, links)
+}
+
+/// Save session-specific links to `.agent-sessions.json` and inject into CLAUDE.md
+#[tauri::command]
+pub fn save_session_links(
+    project_path: String,
+    session_id: String,
+    links: Vec<ProjectLink>,
+) -> Result<(), String> {
+    config::set_session_links(&project_path, &session_id, links.clone())?;
+    let _ = update_claude_md_session_links(&project_path, &session_id, &links);
+    Ok(())
+}
+
+/// Manage a section in `~/.claude/projects/<dir>/CLAUDE.md` with session links.
+/// The section is delimited by HTML comment markers so it can be updated without
+/// disturbing user content.
+fn update_claude_md_session_links(
+    project_path: &str,
+    _session_id: &str,
+    links: &[ProjectLink],
+) -> Result<(), String> {
+    let home = dirs::home_dir().ok_or_else(|| "No home dir".to_string())?;
+    let dir_name = convert_path_to_dir_name(project_path);
+    let projects_dir = home.join(".claude").join("projects").join(&dir_name);
+
+    if !projects_dir.exists() {
+        // Claude projects dir doesn't exist for this project — skip silently
+        return Ok(());
+    }
+
+    let claude_md = projects_dir.join("CLAUDE.md");
+    let existing = std::fs::read_to_string(&claude_md).unwrap_or_default();
+
+    let start_marker = "<!-- agent-sessions:links-start -->";
+    let end_marker = "<!-- agent-sessions:links-end -->";
+
+    // Build the new section (or empty if no links)
+    let new_section = if links.is_empty() {
+        String::new()
+    } else {
+        let mut section = format!("{}\n", start_marker);
+        section.push_str("## Session Links\n");
+        for link in links {
+            section.push_str(&format!("- [{}]({})\n", link.label, link.url));
+        }
+        section.push_str(end_marker);
+        section
+    };
+
+    // Replace existing section or append
+    let new_content = if let Some(start_pos) = existing.find(start_marker) {
+        if let Some(end_pos) = existing.find(end_marker) {
+            let before = &existing[..start_pos];
+            let after = &existing[end_pos + end_marker.len()..];
+            let before = before.trim_end_matches('\n');
+            let after = after.trim_start_matches('\n');
+
+            if new_section.is_empty() {
+                // Remove section entirely
+                if after.is_empty() {
+                    before.to_string()
+                } else {
+                    format!("{}\n{}", before, after)
+                }
+            } else {
+                if after.is_empty() {
+                    format!("{}\n\n{}", before, new_section)
+                } else {
+                    format!("{}\n\n{}\n{}", before, new_section, after)
+                }
+            }
+        } else {
+            // Malformed: start marker without end — append fresh
+            if new_section.is_empty() {
+                existing
+            } else {
+                format!("{}\n\n{}", existing.trim_end(), new_section)
+            }
+        }
+    } else if new_section.is_empty() {
+        // Nothing to add and no existing section
+        return Ok(());
+    } else {
+        // No existing section — append
+        if existing.is_empty() {
+            new_section
+        } else {
+            format!("{}\n\n{}", existing.trim_end(), new_section)
+        }
+    };
+
+    std::fs::write(&claude_md, new_content.trim_end().to_owned() + "\n")
+        .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
+
+    log::info!("Updated CLAUDE.md session links in {:?}", claude_md);
+    Ok(())
 }
 
 /// Kill a session and close its attached companion windows (Chrome, Cursor).

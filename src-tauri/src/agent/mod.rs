@@ -55,6 +55,7 @@ pub fn get_all_sessions() -> SessionsResponse {
     // Clean up git caches for projects no longer active
     let active_paths: HashSet<String> = all_sessions.iter().map(|s| s.project_path.clone()).collect();
     crate::session::git::cleanup_git_caches(&active_paths);
+    crate::session::config::cleanup_links_cache(&active_paths);
 
     // Sort by status priority first, then by most recent activity
     all_sessions.sort_by(|a, b| {

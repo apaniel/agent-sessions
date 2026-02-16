@@ -10,6 +10,7 @@ use crate::agent::AgentProcess;
 use crate::terminal::detect_terminal_for_pid;
 use super::model::{AgentType, Session, SessionStatus, SessionsResponse, JsonlMessage, TerminalApp};
 use super::git;
+use super::config;
 use super::status::{determine_status, has_tool_use, has_tool_result, is_local_slash_command, is_interrupted_request, is_thinking_only, status_sort_priority};
 
 /// Track previous status for each session to detect transitions
@@ -780,6 +781,10 @@ pub fn parse_session_file(
         }
     });
 
+    // Project links from .agent-sessions.json (cached 60s)
+    let project_links = config::get_project_links(project_path);
+    let session_links = config::get_session_links(project_path, &session_id);
+
     let detected = detect_terminal_for_pid(pid);
     info!("Terminal detection for pid={}: {:?}", pid, detected);
     let terminal_app = match detected.as_str() {
@@ -813,5 +818,7 @@ pub fn parse_session_file(
         commits_ahead,
         commits_behind,
         context_window_percent,
+        project_links,
+        session_links,
     })
 }

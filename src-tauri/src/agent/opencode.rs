@@ -1,5 +1,6 @@
 use super::{AgentDetector, AgentProcess};
 use crate::session::{AgentType, Session, SessionStatus, TerminalApp};
+use crate::session::config;
 use crate::terminal::detect_terminal_for_pid;
 use serde::Deserialize;
 use std::collections::HashMap;
@@ -323,6 +324,9 @@ fn get_latest_session_for_project(
         _ => TerminalApp::Unknown,
     };
 
+    let project_links = config::get_project_links(&actual_path);
+    let session_links = config::get_session_links(&actual_path, &session.id);
+
     Some(Session {
         id: session.id,
         agent_type: AgentType::OpenCode,
@@ -344,6 +348,8 @@ fn get_latest_session_for_project(
         commits_ahead: None,
         commits_behind: None,
         context_window_percent: None,
+        project_links,
+        session_links,
     })
 }
 
@@ -527,6 +533,9 @@ fn get_global_session_for_directory(
         _ => TerminalApp::Unknown,
     };
 
+    let project_links = config::get_project_links(&session.directory);
+    let session_links = config::get_session_links(&session.directory, &session.id);
+
     Some(Session {
         id: session.id,
         agent_type: AgentType::OpenCode,
@@ -548,5 +557,7 @@ fn get_global_session_for_directory(
         commits_ahead: None,
         commits_behind: None,
         context_window_percent: None,
+        project_links,
+        session_links,
     })
 }

@@ -17,7 +17,7 @@ use tauri::{
 };
 use std::sync::Mutex;
 
-use commands::{get_all_sessions, focus_session, update_tray_title, register_shortcut, unregister_shortcut, kill_session, kill_session_and_companions, launch_chrome, detach_chrome, launch_cursor, detach_cursor, open_in_cursor};
+use commands::{get_all_sessions, focus_session, update_tray_title, register_shortcut, unregister_shortcut, kill_session, kill_session_and_companions, launch_chrome, detach_chrome, launch_cursor, detach_cursor, open_in_cursor, save_project_links, save_session_links};
 
 // Store tray icon ID for updates
 static TRAY_ID: Mutex<Option<String>> = Mutex::new(None);
@@ -30,7 +30,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![get_all_sessions, focus_session, update_tray_title, register_shortcut, unregister_shortcut, kill_session, kill_session_and_companions, launch_chrome, detach_chrome, launch_cursor, detach_cursor, open_in_cursor])
+        .invoke_handler(tauri::generate_handler![get_all_sessions, focus_session, update_tray_title, register_shortcut, unregister_shortcut, kill_session, kill_session_and_companions, launch_chrome, detach_chrome, launch_cursor, detach_cursor, open_in_cursor, save_project_links, save_session_links])
         .setup(|app| {
             // Create menu for tray
             let show_item = MenuItemBuilder::with_id("show", "Show Window")

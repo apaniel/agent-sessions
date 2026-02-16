@@ -1,6 +1,15 @@
 use serde::{Deserialize, Serialize};
 use super::git::{PrInfo};
 
+/// A link to an external service configured in .agent-sessions.json
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProjectLink {
+    pub label: String,
+    pub url: String,
+    #[serde(default)]
+    pub icon: Option<String>,
+}
+
 /// Type of AI coding agent
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
@@ -46,6 +55,8 @@ pub struct Session {
     pub commits_ahead: Option<u32>,
     pub commits_behind: Option<u32>,
     pub context_window_percent: Option<f32>,
+    pub project_links: Vec<ProjectLink>,
+    pub session_links: Vec<ProjectLink>,
 }
 
 /// Status of a Claude Code session

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Session, TerminalApp } from '../types/session';
+import { Session, TerminalApp, ProjectLink } from '../types/session';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -21,21 +21,6 @@ import { Input } from '@/components/ui/input';
 import { formatTimeAgo, truncatePath, statusConfig } from '@/lib/formatters';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { invoke } from '@tauri-apps/api/core';
-
-// Agent type icons - official Claude icon from Bootstrap Icons, OpenCode pixelated "O" from logo
-const ClaudeIcon = ({ className }: { className?: string }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" className={className || "w-4 h-4"}>
-    <path d="m3.127 10.604 3.135-1.76.053-.153-.053-.085H6.11l-.525-.032-1.791-.048-1.554-.065-1.505-.08-.38-.081L0 7.832l.036-.234.32-.214.455.04 1.009.069 1.513.105 1.097.064 1.626.17h.259l.036-.105-.089-.065-.068-.064-1.566-1.062-1.695-1.121-.887-.646-.48-.327-.243-.306-.104-.67.435-.48.585.04.15.04.593.456 1.267.981 1.654 1.218.242.202.097-.068.012-.049-.109-.181-.9-1.626-.96-1.655-.428-.686-.113-.411a2 2 0 0 1-.068-.484l.496-.674L4.446 0l.662.089.279.242.411.94.666 1.48 1.033 2.014.302.597.162.553.06.17h.105v-.097l.085-1.134.157-1.392.154-1.792.052-.504.25-.605.497-.327.387.186.319.456-.045.294-.19 1.23-.37 1.93-.243 1.29h.142l.161-.16.654-.868 1.097-1.372.484-.545.565-.601.363-.287h.686l.505.751-.226.775-.707.895-.585.759-.839 1.13-.524.904.048.072.125-.012 1.897-.403 1.024-.186 1.223-.21.553.258.06.263-.218.536-1.307.323-1.533.307-2.284.54-.028.02.032.04 1.029.098.44.024h1.077l2.005.15.525.346.315.424-.053.323-.807.411-3.631-.863-.872-.218h-.12v.073l.726.71 1.331 1.202 1.667 1.55.084.383-.214.302-.226-.032-1.464-1.101-.565-.497-1.28-1.077h-.084v.113l.295.432 1.557 2.34.08.718-.112.234-.404.141-.444-.08-.911-1.28-.94-1.44-.759-1.291-.093.053-.448 4.821-.21.246-.484.186-.403-.307-.214-.496.214-.98.258-1.28.21-1.016.19-1.263.112-.42-.008-.028-.092.012-.953 1.307-1.448 1.957-1.146 1.227-.274.109-.477-.247.045-.44.266-.39 1.586-2.018.956-1.25.617-.723-.004-.105h-.036l-4.212 2.736-.75.096-.324-.302.04-.496.154-.162 1.267-.871z"/>
-  </svg>
-);
-
-// OpenCode pixelated "O" extracted from official logo
-const OpenCodeIcon = ({ className }: { className?: string }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 36" className={className || "w-4 h-4"}>
-    <path d="M18 24H6V12H18V24Z" opacity="0.5"/>
-    <path d="M18 6H6V24H18V6ZM24 30H0V0H24V30Z"/>
-  </svg>
-);
 
 // Terminal app icon - shows which terminal the session is running in
 const terminalAppConfig: Record<TerminalApp, { label: string; icon: React.ReactNode } | null> = {
@@ -96,14 +81,6 @@ const terminalAppConfig: Record<TerminalApp, { label: string; icon: React.ReactN
   unknown: null,
 };
 
-// Agent icon - Claude always orange (brand color), OpenCode uses status color
-const AgentStatusIcon = ({ type, statusColor }: { type: 'claude' | 'opencode', statusColor: string }) => {
-  if (type === 'claude') {
-    // Claude brand color: coral/orange #D77655
-    return <ClaudeIcon className="w-4 h-4 fill-[#D77655]" />;
-  }
-  return <OpenCodeIcon className={`w-4 h-4 ${statusColor}`} />;
-};
 
 interface SessionCardProps {
   session: Session;
@@ -152,20 +129,50 @@ function setCustomUrl(projectPath: string, url: string) {
   localStorage.setItem(CUSTOM_URLS_KEY, JSON.stringify(urls));
 }
 
+// --- Project link icon (auto-detected from URL domain) ---
+
+// Favicon fetched from Google's service — works for virtually all domains.
+// Falls back to a generic link icon on error.
+function Favicon({ url, className }: { url: string; className?: string }) {
+  const [failed, setFailed] = useState(false);
+  const hostname = (() => { try { return new URL(url).hostname; } catch { return null; } })();
+
+  if (!hostname || failed) {
+    return (
+      <svg className={className || "w-3.5 h-3.5"} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+      </svg>
+    );
+  }
+
+  return (
+    <img
+      src={`https://icons.duckduckgo.com/ip3/${hostname}.ico`}
+      alt=""
+      className={`${className || "w-3.5 h-3.5"} rounded-sm bg-white/90`}
+      onError={() => setFailed(true)}
+    />
+  );
+}
+
 // --- Shared project header (used by both single and grouped cards) ---
 
 function ProjectHeader({ session, children }: { session: Session; children?: React.ReactNode }) {
+  const hasSessionLinks = session.sessionLinks && session.sessionLinks.length > 0;
+
   return (
     <>
-      {/* Git branch + ahead/behind + PR */}
-      {session.gitBranch && (
+      {/* Git branch + ahead/behind + PR + session links */}
+      {(session.gitBranch || hasSessionLinks) && (
         <div className="flex items-center gap-1.5 flex-wrap">
-          <svg className="w-3.5 h-3.5 text-muted-foreground shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9" />
-          </svg>
-          <span className="text-xs text-muted-foreground truncate">
-            {session.gitBranch}
-          </span>
+          {session.gitBranch && (
+            <>
+              <svg className="w-3.5 h-3.5 text-muted-foreground shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 3v12M18 9a3 3 0 100-6 3 3 0 000 6zM6 21a3 3 0 100-6 3 3 0 000 6zM18 9a9 9 0 01-9 9" />
+              </svg>
+              <span className="text-xs text-muted-foreground truncate">
+                {session.gitBranch}
+              </span>
           {(session.commitsAhead != null && session.commitsAhead > 0 || session.commitsBehind != null && session.commitsBehind! > 0) && (
             <span className="text-[10px] font-mono shrink-0">
               {session.commitsAhead != null && session.commitsAhead > 0 && (
@@ -193,7 +200,11 @@ function ProjectHeader({ session, children }: { session: Session; children?: Rea
               <button
                 className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0 rounded border shrink-0 hover:bg-primary/10 transition-colors"
                 style={{ borderColor: stateColor.border, color: stateColor.text }}
-                onClick={(e) => { e.stopPropagation(); openUrl(session.prInfo!.url); }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  invoke('launch_chrome', { projectName: session.projectName, projectPath: session.projectPath, url: session.prInfo!.url })
+                    .catch(() => openUrl(session.prInfo!.url));
+                }}
                 title={`PR #${session.prInfo.number} - ${prState}${session.prInfo.ciStatus ? ` (CI: ${session.prInfo.ciStatus})` : ''}`}
               >
                 <span className="w-1.5 h-1.5 rounded-full inline-block" style={{ backgroundColor: stateColor.dot }} />
@@ -204,6 +215,22 @@ function ProjectHeader({ session, children }: { session: Session; children?: Rea
               </button>
             );
           })()}
+            </>
+          )}
+          {session.sessionLinks && session.sessionLinks.map((link, i) => (
+            <button
+              key={`sl-${i}`}
+              className="inline-flex items-center justify-center w-5 h-5 rounded border shrink-0 hover:bg-primary/10 transition-colors border-amber-500/40"
+              onClick={(e) => {
+                e.stopPropagation();
+                invoke('launch_chrome', { projectName: session.projectName, projectPath: session.projectPath, url: link.url })
+                  .catch(() => openUrl(link.url));
+              }}
+              title={link.label}
+            >
+              <Favicon url={link.url} className="w-3 h-3" />
+            </button>
+          ))}
           {children}
         </div>
       )}
@@ -213,10 +240,12 @@ function ProjectHeader({ session, children }: { session: Session; children?: Rea
 
 // --- Session menu (3-dot dropdown) ---
 
-function SessionMenu({ session, onRename, onSetUrl, customUrl }: {
+function SessionMenu({ session, onRename, onSetUrl, onProjectLinks, onSessionLinks, customUrl }: {
   session: Session;
   onRename: () => void;
   onSetUrl: () => void;
+  onProjectLinks: () => void;
+  onSessionLinks: () => void;
   customUrl: string;
 }) {
   const handleOpenGitHub = async () => {
@@ -286,6 +315,18 @@ function SessionMenu({ session, onRename, onSetUrl, customUrl }: {
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
           </svg>
           {customUrl ? 'Edit URL' : 'Set URL'}
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onProjectLinks}>
+          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 5a2 2 0 012-2h10a2 2 0 012 2v16l-7-3.5L5 21V5z" />
+          </svg>
+          Project Links
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={onSessionLinks}>
+          <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" />
+          </svg>
+          Session Links
         </DropdownMenuItem>
         <DropdownMenuItem onClick={handleDetachChrome}>
           <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -442,6 +483,84 @@ function SessionDialogs({ session, isRenameOpen, setIsRenameOpen, isUrlOpen, set
   );
 }
 
+// --- Links dialog (reusable for project links and session links) ---
+
+function LinksDialog({ isOpen, onClose, title, links, onSave }: {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  links: ProjectLink[];
+  onSave: (links: ProjectLink[]) => void;
+}) {
+  const [rows, setRows] = useState<{ label: string; url: string }[]>([]);
+
+  // Only initialize rows when the dialog opens — not when `links` changes
+  // mid-edit (polling refreshes cause new array references every cycle).
+  useEffect(() => {
+    if (isOpen) {
+      setRows(links.length > 0 ? links.map(l => ({ label: l.label, url: l.url })) : [{ label: '', url: '' }]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen]);
+
+  const handleSave = () => {
+    const filtered = rows.filter(r => r.label.trim() && r.url.trim());
+    onSave(filtered);
+    onClose();
+  };
+
+  return (
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose(); }}>
+      <DialogContent onClick={(e) => e.stopPropagation()}>
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
+        <div className="py-4 space-y-2">
+          {rows.map((row, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Input
+                value={row.label}
+                onChange={(e) => { const r = [...rows]; r[i] = { ...r[i], label: e.target.value }; setRows(r); }}
+                placeholder="Label"
+                className="flex-1"
+              />
+              <Input
+                value={row.url}
+                onChange={(e) => { const r = [...rows]; r[i] = { ...r[i], url: e.target.value }; setRows(r); }}
+                placeholder="URL"
+                className="flex-[2]"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleSave(); }}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-8 w-8 p-0 shrink-0 text-muted-foreground hover:text-destructive"
+                onClick={() => setRows(rows.filter((_, j) => j !== i))}
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </Button>
+            </div>
+          ))}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setRows([...rows, { label: '', url: '' }])}
+            className="w-full"
+          >
+            + Add Link
+          </Button>
+        </div>
+        <DialogFooter className="flex gap-2">
+          <Button variant="outline" onClick={onClose}>Cancel</Button>
+          <Button onClick={handleSave}>Save</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 // --- Per-session state hook (custom name, url, dialog state) ---
 
 function useSessionCustomData(session: Session) {
@@ -450,6 +569,8 @@ function useSessionCustomData(session: Session) {
   const [customUrl, setCustomUrlState] = useState<string>('');
   const [isRenameOpen, setIsRenameOpen] = useState(false);
   const [isUrlOpen, setIsUrlOpen] = useState(false);
+  const [isProjectLinksOpen, setIsProjectLinksOpen] = useState(false);
+  const [isSessionLinksOpen, setIsSessionLinksOpen] = useState(false);
 
   useEffect(() => {
     const names = getCustomNames();
@@ -497,14 +618,30 @@ function useSessionCustomData(session: Session) {
     }
   };
 
-  return { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor };
+  const handleSaveProjectLinks = async (links: ProjectLink[]) => {
+    try {
+      await invoke('save_project_links', { projectPath, links });
+    } catch (error) {
+      console.error('Failed to save project links:', error);
+    }
+  };
+
+  const handleSaveSessionLinks = async (links: ProjectLink[]) => {
+    try {
+      await invoke('save_session_links', { projectPath, sessionId: session.id, links });
+    } catch (error) {
+      console.error('Failed to save session links:', error);
+    }
+  };
+
+  return { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, isProjectLinksOpen, setIsProjectLinksOpen, isSessionLinksOpen, setIsSessionLinksOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor, handleSaveProjectLinks, handleSaveSessionLinks };
 }
 
 // --- Single session card (unchanged layout for solo sessions) ---
 
 export function SessionCard({ session, onClick }: SessionCardProps) {
   const config = statusConfig[session.status];
-  const { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor } = useSessionCustomData(session);
+  const { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, isProjectLinksOpen, setIsProjectLinksOpen, isSessionLinksOpen, setIsSessionLinksOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor, handleSaveProjectLinks, handleSaveSessionLinks } = useSessionCustomData(session);
 
   const displayName = customName || session.projectName;
 
@@ -518,9 +655,25 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
           {/* Header: Project name + Menu + Status indicator */}
           <div className="flex items-start justify-between gap-2 mb-3">
             <div className="flex-1 min-w-0">
-              <h3 className="font-semibold text-base text-foreground truncate group-hover:text-primary transition-colors">
-                {displayName}
-              </h3>
+              <div className="flex items-center gap-1.5 min-w-0">
+                <h3 className="font-semibold text-base text-foreground truncate group-hover:text-primary transition-colors">
+                  {displayName}
+                </h3>
+                {session.projectLinks && session.projectLinks.map((link, i) => (
+                  <button
+                    key={`pl-${i}`}
+                    className="inline-flex items-center justify-center w-5 h-5 rounded border shrink-0 hover:bg-primary/10 transition-colors border-sky-500/40"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      invoke('launch_chrome', { projectName: session.projectName, projectPath: session.projectPath, url: link.url })
+                        .catch(() => openUrl(link.url));
+                    }}
+                    title={link.label}
+                  >
+                    <Favicon url={link.url} className="w-3 h-3" />
+                  </button>
+                ))}
+              </div>
               <p className="text-xs text-muted-foreground truncate mt-0.5 flex items-center gap-1.5">
                 <span className="truncate">
                   {session.repoName || truncatePath(session.projectPath)}
@@ -573,14 +726,14 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
                   </svg>
                 </Button>
               )}
-              <SessionMenu session={session} onRename={() => setIsRenameOpen(true)} onSetUrl={() => setIsUrlOpen(true)} customUrl={customUrl} />
+              <SessionMenu session={session} onRename={() => setIsRenameOpen(true)} onSetUrl={() => setIsUrlOpen(true)} onProjectLinks={() => setIsProjectLinksOpen(true)} onSessionLinks={() => setIsSessionLinksOpen(true)} customUrl={customUrl} />
             </div>
           </div>
 
           <ProjectHeader session={session} />
 
-          {/* spacer between branch row and message */}
-          {session.gitBranch && <div className="mb-3" />}
+          {/* spacer between branch/links row and message */}
+          {(session.gitBranch || (session.sessionLinks && session.sessionLinks.length > 0)) && <div className="mb-3" />}
 
           {/* Message Preview */}
           <div className="flex-1">
@@ -650,6 +803,20 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
         customName={customName} setCustomNameState={setCustomNameState}
         customUrl={customUrl} setCustomUrlState={setCustomUrlState}
       />
+      <LinksDialog
+        isOpen={isProjectLinksOpen}
+        onClose={() => setIsProjectLinksOpen(false)}
+        title="Project Links"
+        links={session.projectLinks}
+        onSave={handleSaveProjectLinks}
+      />
+      <LinksDialog
+        isOpen={isSessionLinksOpen}
+        onClose={() => setIsSessionLinksOpen(false)}
+        title="Session Links"
+        links={session.sessionLinks}
+        onSave={handleSaveSessionLinks}
+      />
     </>
   );
 }
@@ -658,7 +825,7 @@ export function SessionCard({ session, onClick }: SessionCardProps) {
 
 function SessionSubCard({ session, onClick }: { session: Session; onClick: () => void }) {
   const config = statusConfig[session.status];
-  const { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor } = useSessionCustomData(session);
+  const { customName, setCustomNameState, customUrl, setCustomUrlState, isRenameOpen, setIsRenameOpen, isUrlOpen, setIsUrlOpen, isProjectLinksOpen, setIsProjectLinksOpen, isSessionLinksOpen, setIsSessionLinksOpen, handleOpenUrl, handleLaunchChrome, handleLaunchCursor, handleSaveProjectLinks, handleSaveSessionLinks } = useSessionCustomData(session);
 
   const displayName = customName || null; // only show if custom name set
 
@@ -710,7 +877,7 @@ function SessionSubCard({ session, onClick }: { session: Session; onClick: () =>
               </svg>
             </Button>
           )}
-          <SessionMenu session={session} onRename={() => setIsRenameOpen(true)} onSetUrl={() => setIsUrlOpen(true)} customUrl={customUrl} />
+          <SessionMenu session={session} onRename={() => setIsRenameOpen(true)} onSetUrl={() => setIsUrlOpen(true)} onProjectLinks={() => setIsProjectLinksOpen(true)} onSessionLinks={() => setIsSessionLinksOpen(true)} customUrl={customUrl} />
         </div>
 
         {/* Custom name (if set) */}
@@ -783,6 +950,20 @@ function SessionSubCard({ session, onClick }: { session: Session; onClick: () =>
         customName={customName} setCustomNameState={setCustomNameState}
         customUrl={customUrl} setCustomUrlState={setCustomUrlState}
       />
+      <LinksDialog
+        isOpen={isProjectLinksOpen}
+        onClose={() => setIsProjectLinksOpen(false)}
+        title="Project Links"
+        links={session.projectLinks}
+        onSave={handleSaveProjectLinks}
+      />
+      <LinksDialog
+        isOpen={isSessionLinksOpen}
+        onClose={() => setIsSessionLinksOpen(false)}
+        title="Session Links"
+        links={session.sessionLinks}
+        onSave={handleSaveSessionLinks}
+      />
     </>
   );
 }
@@ -804,9 +985,25 @@ export function GroupedSessionCard({ sessions, onSessionClick }: GroupedSessionC
         {/* Shared header */}
         <div className="flex items-start justify-between gap-2 mb-2">
           <div className="flex-1 min-w-0">
-            <h3 className="font-semibold text-base text-foreground truncate">
-              {representative.projectName}
-            </h3>
+            <div className="flex items-center gap-1.5 min-w-0">
+              <h3 className="font-semibold text-base text-foreground truncate">
+                {representative.projectName}
+              </h3>
+              {representative.projectLinks && representative.projectLinks.map((link, i) => (
+                <button
+                  key={`pl-${i}`}
+                  className="inline-flex items-center justify-center w-5 h-5 rounded border shrink-0 hover:bg-primary/10 transition-colors border-sky-500/40"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    invoke('launch_chrome', { projectName: representative.projectName, projectPath: representative.projectPath, url: link.url })
+                      .catch(() => openUrl(link.url));
+                  }}
+                  title={link.label}
+                >
+                  <Favicon url={link.url} className="w-3 h-3" />
+                </button>
+              ))}
+            </div>
             <p className="text-xs text-muted-foreground truncate mt-0.5 flex items-center gap-1.5">
               <span className="truncate">
                 {representative.repoName || truncatePath(representative.projectPath)}
